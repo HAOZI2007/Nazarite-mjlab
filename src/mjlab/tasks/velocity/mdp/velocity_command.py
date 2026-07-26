@@ -167,7 +167,7 @@ class UniformVelocityCommand(CommandTerm):
           f"Max {label}",
           initial_value=max_val,
           step=0.1,
-          min=0.1,
+          min=0.0,
           max=10.0,
         )
         slider = server.gui.add_slider(
