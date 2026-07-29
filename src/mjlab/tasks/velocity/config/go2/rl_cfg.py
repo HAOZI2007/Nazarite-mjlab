@@ -102,3 +102,20 @@ def unitree_go2_normal_ppo_runner_cfg(
     num_steps_per_env=24,
     max_iterations=15_000,
   )
+
+
+
+def unitree_go2_him_ppo_runner_cfg(
+    experiment_name: str = "go2_himloco_flat",
+) -> RslRlOnPolicyRunnerCfg:
+    """HIMLoco 训练超参数配置[cite: 6]"""
+    cfg = unitree_go2_normal_ppo_runner_cfg(experiment_name=experiment_name)
+    
+    # 扩大 mini_batch 数量和降低 epoch，以防 HIMEstimator 对同一批数据过拟合
+    cfg.algorithm.num_mini_batches = 4
+    cfg.algorithm.num_learning_epochs = 5
+    
+    # HIM 框架通过对比学习需要较长的训练周期，可以适当放宽最大迭代次数[cite: 2]
+    cfg.max_iterations = 8000
+    
+    return cfg

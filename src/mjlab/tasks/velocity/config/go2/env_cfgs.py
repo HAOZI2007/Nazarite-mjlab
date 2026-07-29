@@ -1,6 +1,9 @@
 """Unitree Go2 velocity environment configurations."""
 
 import math
+
+#爬楼梯
+from dataclasses import replace
 from typing import Literal
 
 from mjlab.asset_zoo.robots import (
@@ -25,8 +28,6 @@ from mjlab.sensor import (
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
-#爬楼梯
-from dataclasses import replace
 from mjlab.terrains.config import STAIRS_TERRAINS_CFG
 
 TerrainType = Literal["rough", "obstacles"]
@@ -289,10 +290,10 @@ def unitree_go2_rough_env_cfg(
 
     
   if "foot_slip" in cfg.rewards:
-    cfg.rewards["foot_slip"].weight = -0.02
-  cfg.rewards["body_ang_vel"].weight = -0.02
+    cfg.rewards["foot_slip"].weight = -0.01
+  cfg.rewards["body_ang_vel"].weight = -0.01
   cfg.rewards["angular_momentum"].weight = 0.0
-  cfg.rewards["air_time"].weight = 0.35
+  cfg.rewards["air_time"].weight = 0.25
 
   # 🌟【新增】把平顺性惩罚也加到跑动基础配置里！
   # 严禁它为了追求速度和腾空而产生物理学不允许的鬼畜抖动
@@ -427,6 +428,9 @@ def unitree_go2_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   # Disable terrain curriculum (not present in play mode since rough clears all).
   cfg.curriculum.pop("terrain_levels", None)
+
+
+
   twist_cmd = cfg.commands["twist"]
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
   if play:
@@ -439,10 +443,9 @@ def unitree_go2_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.resampling_time_range = (1e9, 1e9)
   else:
      # 👈 新增：在训练模式下，强迫模型最高训练到 2.5m/s，让 2.0m/s 落在舒适区内
-    twist_cmd.ranges.lin_vel_x = (0.0, 5.0)   
-    # 可选：适当增加一点 Y 和 Yaw 的训练范围，增强鲁棒性
-    twist_cmd.ranges.lin_vel_y = (-2.0, 2.0)
-    twist_cmd.ranges.ang_vel_z = (-2.0, 2.0)
+    twist_cmd.ranges.lin_vel_x = (0.0, 2.0)   
+    twist_cmd.ranges.lin_vel_y = (-1.0, 1.0)
+    twist_cmd.ranges.ang_vel_z = (-1.0, 1.0)
   return cfg
 
 
@@ -596,4 +599,81 @@ def unitree_go2_stairs_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         twist_cmd.ranges.lin_vel_y = (-0.1, 0.1) 
         twist_cmd.ranges.ang_vel_z = (-0.2, 0.2) 
 
+    return cfg
+
+
+def unitree_go2_him_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """专为 HIMLoco 训练的 Unitree Go2 平地环境配置[cite: 6]"""
+    # 继承你写好的 Go2 平地配置[cite: 6]
+    cfg = unitree_go2_flat_env_cfg(play=play)
+    # 3. 拉紧基础姿态：逼迫它尽量贴近默认的“四角站立”对称姿势
+    if "pose" in cfg.rewards:
+      cfg.rewards["pose"].weight = 1.0  # 稍微提高姿态惩罚权重
+    if "foot_slip" in cfg.rewards:
+      cfg.rewards["foot_slip"].weight = -0.01
+  # 2. 重罚“硬着陆”：逼迫它轻轻落脚，这会直接消除“跳跃”步态
+    if "soft_landing" in cfg.rewards:
+      cfg.rewards["soft_landing"].weight = -0.005  # 从 -1e-5 加大到 -0.05
+    cfg.rewards["body_ang_vel"].weight = -0.001
+    cfg.rewards["angular_momentum"].weight = 0.0
+    cfg.rewards["air_time"].weight = 0.1
+  
+    # 🌟【新增】把平顺性惩罚也加到跑动基础配置里！
+    # 严禁它为了追求速度和腾空而产生物理学不允许的鬼畜抖动
+    smoothness_penalties = {
+        "action_rate_l2": -0.01,  # 惩罚过快的动作突变
+        "joint_acc_l2": -0.0001, # 惩罚过高的关节加速度
+        "torques_l2": -0.0002,   # 惩罚过载的电机扭矩
+        "dof_vel": -0.001        # 惩罚超速的关节转速
+    }
+    for penalty_name, weight in smoothness_penalties.items():
+      if penalty_name in cfg.rewards:
+          cfg.rewards[penalty_name].weight = weight
+      elif penalty_name.replace("_l2", "") in cfg.rewards:
+          cfg.rewards[penalty_name.replace("_l2", "")].weight = weight
+
+    # ==========================================
+    # 🌟 炼丹核心：加入域随机化 (DR) 与外部物理扰动
+    # ==========================================
+    if not play:
+        # 1. 模拟电机通信延迟
+        # 真实的 Go2 狗子从主板发指令到电机执行通常有 10~20ms 的延迟
+        # 延迟是物理电机的属性，所以我们遍历机器狗的所有关节执行器 (Actuators) 并注入延迟
+        robot_cfg = cfg.scene.entities["robot"]
+        if hasattr(robot_cfg, "articulation") and robot_cfg.articulation is not None:
+            for actuator in robot_cfg.articulation.actuators:
+                actuator.delay_min_lag = 1
+                actuator.delay_max_lag = 2
+
+        # 2. 在新回合开始时（reset）更新地面摩擦力
+        # 将基础配置中的 "startup"（仅启动时随机）覆盖为 "reset"（每回合重新随机）
+        if "foot_friction_slide" in cfg.events:
+            cfg.events["foot_friction_slide"].mode = "reset"
+        if "foot_friction_spin" in cfg.events:
+            cfg.events["foot_friction_spin"].mode = "reset"
+        if "foot_friction_roll" in cfg.events:
+            cfg.events["foot_friction_roll"].mode = "reset"
+            
+        # 3. 定时施加随机小推力（模拟被人踢一脚或外部冲击）
+        cfg.events["push_robot"] = EventTermCfg(
+            func=envs_mdp.push_by_setting_velocity,
+            mode="interval",             # Interval 模式代表在回合中每隔一段时间触发一次[cite: 10]
+            interval_range_s=(2.0, 4.0), # 每 2~4 秒随机推一次[cite: 10]
+            params={
+                "velocity_range": {
+                    "x": (-0.4, 0.4),    # 纵向随机推力，模拟前后被撞[cite: 10]
+                    "y": (-0.4, 0.4),    # 侧向随机推力，模拟侧踹[cite: 10]
+                    "z": (0.0, 0.0),     # 垂直方向不推（防止意外原地起飞）[cite: 10]
+                    "yaw": (-0.3, 0.3),  # 航向角的扭转推力[cite: 10]
+                },
+            },
+        )
+    
+    # [HIMLoco 核心]：开启 Actor 的观测历史帧堆叠。设为 15 帧以提供足够的时间上下文供 Estimator 推断隐态
+    cfg.observations["actor"].history_length = 15
+    
+    # 确保特权观测 (Critic) 是开启的，且不叠加历史帧，保持单步上帝视角[cite: 2, 5]
+    if "critic" in cfg.observations:
+        cfg.observations["critic"].history_length = 0
+        
     return cfg
