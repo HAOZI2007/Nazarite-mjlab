@@ -439,7 +439,7 @@ def unitree_go2_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.resampling_time_range = (1e9, 1e9)
   else:
      # 👈 新增：在训练模式下，强迫模型最高训练到 2.5m/s，让 2.0m/s 落在舒适区内
-    twist_cmd.ranges.lin_vel_x = (0.0, 5.0)   
+    twist_cmd.ranges.lin_vel_x = (-1.0, 5.0)   
     # 可选：适当增加一点 Y 和 Yaw 的训练范围，增强鲁棒性
     twist_cmd.ranges.lin_vel_y = (-2.0, 2.0)
     twist_cmd.ranges.ang_vel_z = (-2.0, 2.0)

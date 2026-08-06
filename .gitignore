@@ -13,6 +13,7 @@ artifacts/
 .venv/
 render_robots.py
 benchmark_results/
+third_party/rsl_rl/build/
 
 # Documentation outputs.
 **/_build/*
