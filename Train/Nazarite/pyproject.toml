@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nazarite-training"
+version = "0.1.0"
+description = "Nazarite robot reinforcement-learning tasks built on mjlab"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "mjlab[cu128]",
+  "pynput>=1.8.2",
+]
+
+# mjlab discovers custom environments through this entry-point group.
+[project.entry-points."mjlab.tasks"]
+nazarite = "nazarite"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0.0",
+  "ruff>=0.16.0",
+  "pyright>=1.1.400",
+]
+
+[tool.setuptools.packages.find]
+where = ["Nazarite-src"]
+include = ["nazarite*"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.sources]
+mjlab = { path = "mjlab", editable = true }
+warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" },
+  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com/"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# Keep editor/type-checker import resolution consistent with the editable
+# packages used by uv. The project contains two src-layout packages plus the
+# local RSL-RL source tree.
+[tool.pyright]
+pythonVersion = "3.10"
+venvPath = "mjlab"
+venv = ".venv"
+extraPaths = [
+  "mjlab/src",
+  "mjlab/RSL-RL",
+  "Nazarite-src",
+]
+stubPath = "mjlab/typings"
+exclude = [
+  "mjlab/docs",
+  "mjlab/typings",
+  "mjlab/src/mjlab/utils/lab_api",
+]
+
+[tool.ruff]
+src = ["mjlab/src", "Nazarite-src"]
+extend-exclude = [
+  "mjlab/typings",
+  "mjlab/src/mjlab/utils/lab_api",
+]

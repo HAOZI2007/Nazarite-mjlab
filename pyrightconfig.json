@@ -1,0 +1,21 @@
+{
+  "include": [
+    "Train/Nazarite/mjlab/src",
+    "Train/Nazarite/mjlab/tests",
+    "Train/Nazarite/Nazarite-src"
+  ],
+  "exclude": [
+    "Train/Nazarite/mjlab/docs",
+    "Train/Nazarite/mjlab/typings",
+    "Train/Nazarite/mjlab/src/mjlab/utils/lab_api"
+  ],
+  "pythonVersion": "3.10",
+  "venvPath": "Train/Nazarite/mjlab",
+  "venv": ".venv",
+  "extraPaths": [
+    "Train/Nazarite/mjlab/src",
+    "Train/Nazarite/mjlab/RSL-RL",
+    "Train/Nazarite/Nazarite-src"
+  ],
+  "stubPath": "Train/Nazarite/mjlab/typings"
+}
