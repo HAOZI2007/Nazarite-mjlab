@@ -209,18 +209,31 @@ def angular_momentum_penalty(
 def feet_air_time(
   env: ManagerBasedRlEnv,
   sensor_name: str,
-  threshold_min: float = 0.05,
-  threshold_max: float = 0.5,
+  threshold: float = 0.1,
   command_name: str | None = None,
   command_threshold: float = 0.5,
 ) -> torch.Tensor:
-  """Reward feet air time."""
+  """Reward feet for completing a swing phase, evaluated at landing.
+
+  A foot earns ``(air_time - threshold)`` only on the step it touches down
+  again (``first_contact``). This encourages the policy to complete a proper
+  swing phase instead of hovering with a foot permanently held in the air,
+  which the previous "count of airborne feet" formulation inadvertently
+  rewarded.
+  """
   sensor: ContactSensor = env.scene[sensor_name]
   sensor_data = sensor.data
   current_air_time = sensor_data.current_air_time
+  last_air_time = sensor_data.last_air_time
   assert current_air_time is not None
-  in_range = (current_air_time > threshold_min) & (current_air_time < threshold_max)
-  reward = torch.sum(in_range.float(), dim=1)
+  assert last_air_time is not None
+  # ``current_air_time`` is already reset to 0 on the landing step, so the
+  # completed swing duration lives in ``last_air_time``.
+  first_contact = sensor.compute_first_contact(dt=env.step_dt)  # [B, F]
+  reward = torch.sum(
+    torch.clamp(last_air_time - threshold, min=0.0) * first_contact.float(),
+    dim=1,
+  )
   in_air = current_air_time > 0
   num_in_air = torch.sum(in_air.float())
   mean_air_time = torch.sum(current_air_time * in_air.float()) / torch.clamp(
@@ -233,9 +246,56 @@ def feet_air_time(
       linear_norm = torch.norm(command[:, :2], dim=1)
       angular_norm = torch.abs(command[:, 2])
       total_command = linear_norm + angular_norm
-      scale = (total_command > command_threshold).float()
-      reward *= scale
+      reward = reward * (total_command > command_threshold).float()
   return reward
+
+
+def prolonged_air_time(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  max_air_time: float = 0.3,
+) -> torch.Tensor:
+  """Penalize feet that stay airborne longer than ``max_air_time``.
+
+  The positive gait reward (``feet_air_time``) only rewards a foot when it
+  lands, so a foot that hovers forever simply earns nothing. This term closes
+  that gap: a foot in the air past ``max_air_time`` accrues a growing penalty
+  each step, forcing the policy to put every foot back down.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  sensor_data = sensor.data
+  current_air_time = sensor_data.current_air_time
+  assert current_air_time is not None
+  return torch.sum(torch.clamp(current_air_time - max_air_time, min=0.0), dim=1)
+
+
+def feet_stance_contact(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.05,
+  force_threshold: float = 5.0,
+) -> torch.Tensor:
+  """Penalize missing foot contacts while the commanded velocity is zero.
+
+  The returned value is the fraction of feet that are not bearing a meaningful
+  contact force. A negative reward weight therefore penalizes each missing foot
+  during standing, while leaving swing phases unaffected during locomotion.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  force = sensor.data.force
+  assert force is not None
+
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  standing = (total_command < command_threshold).float()
+  contact_force = torch.norm(force, dim=-1)
+  in_contact = contact_force > force_threshold
+  missing_fraction = (~in_contact).float().mean(dim=1)
+
+  env.extras["log"]["Metrics/stance_contact_fraction"] = in_contact.float().mean()
+  return missing_fraction * standing
 
 
 def feet_clearance(
@@ -246,7 +306,7 @@ def feet_clearance(
   command_threshold: float = 0.01,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Penalize deviation from target clearance height, weighted by foot velocity."""
+  """Penalize low foot clearance while moving, weighted by foot velocity."""
   asset: Entity = env.scene[asset_cfg.name]
   height_sensor = env.scene[height_sensor_name]
   assert isinstance(height_sensor, TerrainHeightSensor), (
@@ -255,7 +315,10 @@ def feet_clearance(
   foot_height = height_sensor.data.heights  # [B, F]
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, F, 2]
   vel_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, F]
-  delta = torch.abs(foot_height - target_height)  # [B, F]
+  # Only penalize feet that are too *low* while moving (dragging). Lifting a
+  # foot above the target is fine; penalizing the absolute deviation also
+  # punished the downward planting motion and made hovering cost-free.
+  delta = torch.clamp(foot_height - target_height, max=0.0).neg()  # [B, F]
   cost = torch.sum(delta * vel_norm, dim=1)  # [B]
   if command_name is not None:
     command = env.command_manager.get_command(command_name)

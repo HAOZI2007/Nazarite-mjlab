@@ -77,6 +77,20 @@ class RslRlPpoAlgorithmCfg:
   """The optimizer to use."""
   share_cnn_encoders: bool = False
   """Share CNN encoders between actor and critic."""
+  diagnostics_enabled: bool = True
+  """Enable per-environment rollout numerical diagnostics."""
+  diagnostics_report_threshold: float = 100.0
+  """Print per-environment maxima when a rollout value exceeds this limit."""
+  diagnostics_max_abs: float = 1.0e6
+  """Hard maximum absolute rollout value before raising an error."""
+  strict_gradient_checks: bool = True
+  """Reject non-finite Actor/Critic gradients and parameters before continuing."""
+  recover_on_nonfinite: bool = True
+  """Roll back a failed PPO update and continue training when numerical checks fail."""
+  recovery_lr_factor: float = 0.5
+  """Multiply the learning rate by this factor after a recovered update."""
+  max_consecutive_recoveries: int = 20
+  """Maximum consecutive recovered updates before stopping; 0 means unlimited."""
   class_name: str = "PPO"
   """Algorithm class name resolved by RSL-RL."""
 

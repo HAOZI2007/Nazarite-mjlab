@@ -8,6 +8,33 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added per-environment PPO rollout diagnostics for observations, rewards,
+  values, returns, and advantages, together with strict gradient and parameter
+  finite-value checks.
+- Added the ``日志参数详解.md`` guide for interpreting the Go2 flat-ground
+  velocity-course configuration, curriculum stage metrics, and the latest run.
+- Added a staged Go2 flat-ground velocity curriculum with global speed buckets,
+  direct high-speed starts from rest, and curriculum-gated push and mass
+  randomization.
+- Added a zero-command stance-contact penalty for Go2 velocity training so
+  missing foot contacts are penalized during standing without affecting gait
+  swing phases.
+- Added reusable Go2 velocity-task domain randomization for mass properties,
+  actuator gains, friction, encoder bias, and external pushes.
+- Added time-major frame stacking to the observation manager and configured Go2
+  velocity Actor/Critic inputs with 10 and 3 frames respectively.
+- Added episode-fixed Go2 command latency sampling: each environment samples a
+  1–3 physics-step actuator delay on reset and holds it until the next reset.
+- Added MuJoCo NaN guarding and ``nan_detection`` termination to the Go2
+  flat-ground task, including diagnostic state dumps in
+  ``/tmp/mjlab/nan_dumps/go2_flat``.
+- Added Actor/Critic finite-value checks for model inputs, outputs, Gaussian
+  distribution parameters, and sampled actions to report numerical failures at
+  their source.
+- Added per-environment physical state-limit termination and reward masking for
+  extreme joint or root velocities before they can contaminate PPO rollouts.
+- Added per-environment catastrophic-action protection and episode stability
+  counters so non-finite or extreme policy outputs are isolated and reset.
 - Added ``MeshCfg``, a spec editor that matches mesh assets by name and edits
   their asset-level attributes. The first attribute is ``maxhullvert``, which
   caps the collision convex hull's vertex count to lower narrowphase cost.
@@ -18,7 +45,25 @@ Added
 Changed
 ^^^^^^^
 
+- PPO now rolls back the complete update, reduces the learning rate, and
+  continues training after a non-finite gradient or parameter failure, with a
+  configurable consecutive-recovery limit.
+- Centralized velocity-task robot sensor construction, robot-specific action and
+  reward bindings, and the staged flat-ground velocity curriculum in
+  ``make_velocity_env_cfg``; individual robot configs now provide only their
+  names and task-specific overrides.
+- Staged velocity progression now requires clean action, state-limit, and NaN
+  rates, and backs off randomized perturbations before gradually restoring them.
+- Episode metrics now mask the same invalid environments as rewards, preventing
+  a single numerical failure from writing NaN values into tracking logs.
+- Enabled the training disturbance pushes in the Go2 flat-ground velocity
+  play mode so interactive evaluation also tests push recovery.
+- Go2 velocity smoothing penalties are now registered in the common velocity
+  task factory, so flat-ground tasks apply action-rate, acceleration, torque,
+  and joint-velocity penalties consistently.
 - Enabled skybox rendering for camera sensors.
+- Go2 flat-ground training now clips wrapper actions to ``[-1, 1]`` and starts
+  with staged push and mass randomization disabled until the baseline is stable.
 - Command delay on fusable actuators (ideal PD, DC motor) now applies one shared
   lag per environment across all fused actuators sharing a delay config, matching
   the built-in actuator path, rather than an independent lag per actuator group
@@ -27,6 +72,8 @@ Changed
 Fixed
 ^^^^^
 
+- Fixed Go2 play-mode pseudo-inertia randomization targeting zero-inertia foot
+  bodies, which could create NaN model fields on the first simulation step.
 - Fixed ``mdp.bad_orientation`` returning NaN when float32 rounding in
   ``quat_apply_inverse`` pushed the projected-gravity z-component slightly
   outside ``[-1, 1]``, making ``torch.acos`` return NaN and silently

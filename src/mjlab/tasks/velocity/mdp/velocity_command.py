@@ -48,6 +48,50 @@ class UniformVelocityCommand(CommandTerm):
 
     self.metrics["error_vel_xy"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["error_vel_yaw"] = torch.zeros(self.num_envs, device=self.device)
+    # Per-axis tracking error, used by the velocity curriculum as a decoupled
+    # signal per command dimension (x / y / yaw).
+    self.metrics["error_vel_x"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["error_vel_y"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["track_x_quality_sum"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["track_x_step_count"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["high_speed_track_sum"] = torch.zeros(
+      self.num_envs, device=self.device
+    )
+    self.metrics["high_speed_step_count"] = torch.zeros(
+      self.num_envs, device=self.device
+    )
+    self.metrics["direct_start_attempt"] = torch.zeros(
+      self.num_envs, device=self.device
+    )
+    self.metrics["direct_start_success"] = torch.zeros(
+      self.num_envs, device=self.device
+    )
+
+    self._direct_start_active = torch.zeros(
+      self.num_envs, dtype=torch.bool, device=self.device
+    )
+    self._direct_start_good_steps = torch.zeros(
+      self.num_envs, dtype=torch.long, device=self.device
+    )
+    self._direct_start_steps = torch.zeros(
+      self.num_envs, dtype=torch.long, device=self.device
+    )
+    self._direct_start_window_steps = max(
+      1, round(self.cfg.direct_start_window_s / env.step_dt)
+    )
+    self._episode_reset_env_ids: torch.Tensor | None = None
+
+    # Per-env speed caps, adjusted by the velocity curriculum. Defaults to the
+    # configured range max so tasks without a curriculum are unaffected.
+    self.lin_vel_x_max = torch.full(
+      (self.num_envs,), float(self.cfg.ranges.lin_vel_x[1]), device=self.device
+    )
+    self.lin_vel_y_max = torch.full(
+      (self.num_envs,), float(self.cfg.ranges.lin_vel_y[1]), device=self.device
+    )
+    self.ang_vel_z_max = torch.full(
+      (self.num_envs,), float(self.cfg.ranges.ang_vel_z[1]), device=self.device
+    )
 
     # Set by create_gui() when the viewer is active.
     self._joystick_enabled: viser.GuiCheckboxHandle | None = None
@@ -67,16 +111,74 @@ class UniformVelocityCommand(CommandTerm):
       )
       / max_command_step
     )
+    self.metrics["error_vel_x"] += (
+      torch.abs(self.vel_command_b[:, 0] - self.robot.data.root_link_lin_vel_b[:, 0])
+      / max_command_step
+    )
+    self.metrics["error_vel_y"] += (
+      torch.abs(self.vel_command_b[:, 1] - self.robot.data.root_link_lin_vel_b[:, 1])
+      / max_command_step
+    )
     self.metrics["error_vel_yaw"] += (
       torch.abs(self.vel_command_b[:, 2] - self.robot.data.root_link_ang_vel_b[:, 2])
       / max_command_step
     )
+    x_error = torch.abs(
+      self.vel_command_b[:, 0] - self.robot.data.root_link_lin_vel_b[:, 0]
+    )
+    x_quality = torch.exp(-torch.square(x_error / self.cfg.track_x_quality_std))
+    self.metrics["track_x_quality_sum"] += x_quality
+    self.metrics["track_x_step_count"] += 1.0
+
+    high_speed = (
+      torch.abs(self.vel_command_b[:, 0]) >= self.cfg.high_speed_metric_threshold
+    )
+    self.metrics["high_speed_track_sum"] += x_quality * high_speed
+    self.metrics["high_speed_step_count"] += high_speed
+
+    if self.cfg.direct_start_window_s > 0.0:
+      active = self._direct_start_active
+      self._direct_start_steps[active] += 1
+      self._direct_start_good_steps[active] += (
+        x_error[active] <= self.cfg.direct_start_tracking_tolerance
+      ).to(torch.long)
+      done = active & (self._direct_start_steps >= self._direct_start_window_steps)
+      if done.any():
+        success = (
+          self._direct_start_good_steps[done].float()
+          / self._direct_start_steps[done].clamp(min=1).float()
+        ) >= self.cfg.direct_start_success_ratio
+        self.metrics["direct_start_success"][done] = success.float()
+        self._direct_start_active[done] = False
+
+  def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    assert isinstance(env_ids, torch.Tensor)
+    self._direct_start_active[env_ids] = False
+    self._direct_start_good_steps[env_ids] = 0
+    self._direct_start_steps[env_ids] = 0
+    self._episode_reset_env_ids = env_ids
+    try:
+      return super().reset(env_ids)
+    finally:
+      self._episode_reset_env_ids = None
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
+    if self.cfg.velocity_buckets is None:
+      # Backward-compatible path for tasks that still use per-environment caps.
+      x_lo = self.cfg.ranges.lin_vel_x[0]
+      x_hi = self.lin_vel_x_max[env_ids]
+      self.vel_command_b[env_ids, 0] = x_lo + torch.rand(
+        len(env_ids), device=self.device
+      ) * (x_hi - x_lo)
+    else:
+      self.vel_command_b[env_ids, 0] = self._sample_velocity_buckets(len(env_ids))
+    self.vel_command_b[env_ids, 1] = (
+      torch.rand(len(env_ids), device=self.device) * 2 - 1
+    ) * self.lin_vel_y_max[env_ids]
+    self.vel_command_b[env_ids, 2] = (
+      torch.rand(len(env_ids), device=self.device) * 2 - 1
+    ) * self.ang_vel_z_max[env_ids]
     r = torch.empty(len(env_ids), device=self.device)
-    self.vel_command_b[env_ids, 0] = r.uniform_(*self.cfg.ranges.lin_vel_x)
-    self.vel_command_b[env_ids, 1] = r.uniform_(*self.cfg.ranges.lin_vel_y)
-    self.vel_command_b[env_ids, 2] = r.uniform_(*self.cfg.ranges.ang_vel_z)
     if self.cfg.heading_command:
       assert self.cfg.ranges.heading is not None
       self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
@@ -112,6 +214,47 @@ class UniformVelocityCommand(CommandTerm):
         [root_pos, root_quat, root_lin_vel_w, root_ang_vel_b], dim=-1
       )
       self.robot.write_root_state_to_sim(root_state, init_vel_env_ids)
+
+    if self._episode_reset_env_ids is not None:
+      reset_mask = torch.isin(env_ids, self._episode_reset_env_ids)
+      reset_ids = env_ids[reset_mask]
+      if len(reset_ids) > 0:
+        root_speed = torch.norm(
+          self.robot.data.root_link_lin_vel_b[reset_ids, :2], dim=1
+        )
+        high_speed = (
+          torch.abs(self.vel_command_b[reset_ids, 0])
+          >= self.cfg.direct_start_speed_threshold
+        )
+        direct_ids = reset_ids[high_speed & (root_speed <= 0.1)]
+        if len(direct_ids) > 0:
+          self.metrics["direct_start_attempt"][direct_ids] = 1.0
+          self._direct_start_active[direct_ids] = True
+          self._direct_start_good_steps[direct_ids] = 0
+          self._direct_start_steps[direct_ids] = 0
+
+  def _sample_velocity_buckets(self, count: int) -> torch.Tensor:
+    assert self.cfg.velocity_buckets is not None
+    x_lo, x_hi = self.cfg.ranges.lin_vel_x
+    buckets = [
+      bucket
+      for bucket in self.cfg.velocity_buckets
+      if bucket[0] >= x_lo - 1e-6 and bucket[1] <= x_hi + 1e-6
+    ]
+    if not buckets:
+      return x_lo + torch.rand(count, device=self.device) * (x_hi - x_lo)
+    weights = torch.tensor(
+      [bucket[2] for bucket in buckets], device=self.device, dtype=torch.float
+    )
+    weights /= weights.sum()
+    bucket_ids = torch.multinomial(weights, count, replacement=True)
+    lows = torch.tensor(
+      [bucket[0] for bucket in buckets], device=self.device, dtype=torch.float
+    )[bucket_ids]
+    highs = torch.tensor(
+      [bucket[1] for bucket in buckets], device=self.device, dtype=torch.float
+    )[bucket_ids]
+    return lows + torch.rand(count, device=self.device) * (highs - lows)
 
   def _update_command(self) -> None:
     if self.cfg.heading_command:
@@ -293,6 +436,14 @@ class UniformVelocityCommandCfg(CommandTermCfg):
   lin_vel_x, zero lin_vel_y and ang_vel_z). Increases training coverage for
   straight-line walking, which is important for stair climbing."""
   init_velocity_prob: float = 0.0
+  velocity_buckets: tuple[tuple[float, float, float], ...] | None = None
+  """Optional (min, max, weight) buckets for global x-speed sampling."""
+  track_x_quality_std: float = 0.5
+  high_speed_metric_threshold: float = 1.8
+  direct_start_speed_threshold: float = 1.8
+  direct_start_window_s: float = 2.0
+  direct_start_tracking_tolerance: float = 0.35
+  direct_start_success_ratio: float = 0.7
 
   @dataclass
   class Ranges:
@@ -314,6 +465,15 @@ class UniformVelocityCommandCfg(CommandTermCfg):
     return UniformVelocityCommand(self, env)
 
   def __post_init__(self):
+    if self.velocity_buckets is not None:
+      if any(
+        bucket[0] > bucket[1] or bucket[2] <= 0.0 for bucket in self.velocity_buckets
+      ):
+        raise ValueError(
+          "Velocity bucket ranges must be ordered and have positive weights."
+        )
+    if self.direct_start_window_s < 0.0:
+      raise ValueError("direct_start_window_s must be non-negative.")
     if self.heading_command and self.ranges.heading is None:
       raise ValueError(
         "The velocity command has heading commands active (heading_command=True) but "

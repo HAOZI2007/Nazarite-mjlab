@@ -92,6 +92,14 @@ class ObservationGroupCfg:
   """Group-level history length override. If set, applies to all terms in
   this group. If None, each term uses its own ``history_length`` setting."""
 
+  history_ordering: Literal["term", "time"] = "term"
+  """Ordering used when flattening a group's observation history.
+
+  ``"term"`` keeps all frames of one term together (the historical default).
+  ``"time"`` interleaves terms within each frame, which is convenient when a
+  policy consumes a fixed-size temporal stack.
+  """
+
   flatten_history_dim: bool = True
   """Whether to flatten history into the observation dimension. If True,
   observations have shape ``(num_envs, obs_dim * history_length)``. If False,
@@ -110,6 +118,9 @@ class ObservationGroupCfg:
   """If True, check each observation term individually to identify NaN source.
   If False, check only the final concatenated output (faster but less informative).
   Only applies when nan_policy != 'disabled'."""
+
+  diagnostics_enabled: bool = False
+  """Expose processed per-term observations for numerical diagnostics."""
 
 
 class ObservationManager(ManagerBase):
@@ -361,6 +372,13 @@ class ObservationManager(ManagerBase):
       else:
         group_obs[term_name] = obs
 
+      if group_cfg.diagnostics_enabled:
+        diagnostics = self._env.extras.setdefault("diagnostics", {})
+        observation_diagnostics = diagnostics.setdefault("observations", {})
+        observation_diagnostics[f"{group_name}/{term_name}"] = (
+          group_obs[term_name].detach().clone()
+        )
+
     # Final NaN check for non-per-term checking.
     if not group_cfg.nan_check_per_term and group_cfg.nan_policy != "disabled":
       if self._group_obs_concatenate[group_name]:
@@ -378,6 +396,8 @@ class ObservationManager(ManagerBase):
       result = torch.cat(
         list(group_obs.values()), dim=self._group_obs_concatenate_dim[group_name]
       )
+      if result.dim() == 3 and group_cfg.history_ordering == "time":
+        result = result.reshape(self._env.num_envs, -1)
       # Final check for concatenated result (non-per-term checking).
       if not group_cfg.nan_check_per_term and group_cfg.nan_policy != "disabled":
         result = self._check_and_handle_nans(
@@ -437,7 +457,12 @@ class ObservationManager(ManagerBase):
           term_cfg.noise = None
         if group_cfg.history_length is not None:
           term_cfg.history_length = group_cfg.history_length
-          term_cfg.flatten_history_dim = group_cfg.flatten_history_dim
+          # Keep each term's history axis available until concatenation so the
+          # time-major layout can interleave terms frame by frame.
+          if group_cfg.history_ordering == "time":
+            term_cfg.flatten_history_dim = False
+          else:
+            term_cfg.flatten_history_dim = group_cfg.flatten_history_dim
         self._group_obs_term_names[group_name].append(term_name)
         self._group_obs_term_cfgs[group_name].append(term_cfg)
         if hasattr(term_cfg.func, "reset") and callable(term_cfg.func.reset):

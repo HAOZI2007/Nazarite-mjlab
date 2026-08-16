@@ -144,11 +144,13 @@ class MetricsManager(ManagerBase):
       self._substep_accum[i] += value
     self._substep_count += 1
 
-  def compute(self) -> None:
+  def compute(self, invalid_envs: torch.Tensor | None = None) -> None:
     self._step_count += 1
     if self._substep_term_indices and self._substep_count > 0:
       for i, idx in enumerate(self._substep_term_indices):
         avg = self._substep_accum[i] / self._substep_count
+        if invalid_envs is not None:
+          avg = torch.where(invalid_envs, torch.zeros_like(avg), avg)
         self._substep_episode_sums[i] += avg
         self._step_values[:, idx] = avg
         max_buf = self._substep_episode_max[i]
@@ -159,6 +161,8 @@ class MetricsManager(ManagerBase):
     for idx in self._step_term_indices:
       name = self._term_names[idx]
       value = self._compute_term(idx)
+      if invalid_envs is not None:
+        value = torch.where(invalid_envs, torch.zeros_like(value), value)
       self._episode_sums[name] += value
       self._step_values[:, idx] = value
       if name in self._episode_max:
@@ -221,5 +225,5 @@ class NullMetricsManager:
   def compute_substep(self) -> None:
     pass
 
-  def compute(self) -> None:
+  def compute(self, invalid_envs: torch.Tensor | None = None) -> None:
     pass

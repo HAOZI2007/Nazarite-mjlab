@@ -45,6 +45,27 @@ def test_auto_reset_true_resets_done_envs(device):
   env.close()
 
 
+def test_action_safety_is_per_environment(device):
+  """A catastrophic action is isolated and reset without clipping other envs."""
+  cfg = _make_cfg(auto_reset=True)
+  cfg.action_safety_enabled = True
+  cfg.action_safety_max_abs = 5.0
+  env = ManagerBasedRlEnv(cfg=cfg, device=device)
+  env.reset()
+
+  action = torch.zeros((env.num_envs, 1), device=env.device)
+  action[1, 0] = 10.0
+  _, reward, terminated, truncated, extras = env.step(action)
+
+  assert terminated[1]
+  assert not truncated[1]
+  assert reward[1] == 0.0
+  assert extras["diagnostics"]["action_invalid"][1]
+  assert not extras["diagnostics"]["action_invalid"][0]
+  assert env.episode_length_buf[1] == 0
+  env.close()
+
+
 def test_auto_reset_false_preserves_terminal_state(device):
   """With auto_reset=False, done envs are NOT reset and obs is the terminal state."""
   env = ManagerBasedRlEnv(cfg=_make_cfg(auto_reset=False), device=device)

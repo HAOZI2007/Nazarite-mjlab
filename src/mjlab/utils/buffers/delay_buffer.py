@@ -92,6 +92,10 @@ class DelayBuffer:
     per_env_phase (bool, optional): If True and `update_period > 0`, each
       environment uses a different phase offset in `[0, update_period)`, causing
       staggered refresh steps across the batch.
+    resample_on_reset (bool, optional): If True, sample a lag when an environment
+      is reset and hold it until that environment is reset again. This models a
+      fixed communication latency for one episode. ``hold_prob`` and
+      ``update_period`` are ignored while this mode is active.
     generator (torch.Generator | None, optional): Optional RNG for sampling lags.
 
   Examples:
@@ -127,6 +131,7 @@ class DelayBuffer:
     hold_prob: float = 0.0,
     update_period: int = 0,
     per_env_phase: bool = True,
+    resample_on_reset: bool = False,
     generator: torch.Generator | None = None,
   ) -> None:
     if min_lag < 0:
@@ -146,6 +151,7 @@ class DelayBuffer:
     self.hold_prob = hold_prob
     self.update_period = update_period
     self.per_env_phase = per_env_phase
+    self.resample_on_reset = resample_on_reset
     self.generator = generator
 
     buffer_size = max_lag + 1 if max_lag > 0 else 1
@@ -218,6 +224,12 @@ class DelayBuffer:
       )
       self._phase_offsets[idx] = new_phases[idx]
 
+    if self.resample_on_reset:
+      reset_mask = torch.zeros(self.batch_size, dtype=torch.bool, device=self.device)
+      reset_mask[idx] = True
+      sampled_lags = self._sample_lags(reset_mask, respect_hold_prob=False)
+      self._current_lags = torch.where(reset_mask, sampled_lags, self._current_lags)
+
   def append(self, data: torch.Tensor) -> None:
     """Append new observation to buffer.
 
@@ -246,6 +258,9 @@ class DelayBuffer:
 
   def _update_lags(self) -> None:
     """Update current lags according to configured policy."""
+    if self.resample_on_reset:
+      self._step_count += 1
+      return
     if self.update_period > 0:
       phase_adjusted_count = (self._step_count + self._phase_offsets) % (
         self.update_period
@@ -257,7 +272,9 @@ class DelayBuffer:
     self._current_lags = torch.where(should_update, new_lags, self._current_lags)
     self._step_count += 1
 
-  def _sample_lags(self, mask: torch.Tensor) -> torch.Tensor:
+  def _sample_lags(
+    self, mask: torch.Tensor, *, respect_hold_prob: bool = True
+  ) -> torch.Tensor:
     """Sample new lags for specified environments.
 
     Args:
@@ -286,7 +303,7 @@ class DelayBuffer:
       )
       candidate_lags = shared_lag.expand(self.batch_size)
 
-    if self.hold_prob > 0.0:
+    if respect_hold_prob and self.hold_prob > 0.0:
       should_sample = (
         torch.rand(
           self.batch_size,

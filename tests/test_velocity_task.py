@@ -51,6 +51,69 @@ def test_velocity_tasks_have_twist_command(velocity_task_ids: list[str]) -> None
     )
 
 
+def test_go2_flat_has_temporal_observations_and_smoothness_rewards() -> None:
+  """The Go2 flat task exposes the configured history and all smoothness terms."""
+  cfg = load_env_cfg("Mjlab-Velocity-Flat-Unitree-Go2")
+
+  actor = cfg.observations["actor"]
+  critic = cfg.observations["critic"]
+  assert actor.history_length == 10
+  assert critic.history_length == 3
+  assert actor.history_ordering == "time"
+  assert critic.history_ordering == "time"
+
+  expected_weights = {
+    "action_rate_l2": -0.005,
+    "joint_acc_l2": -2.5e-7,
+    "torques_l2": -1.0e-4,
+    "dof_vel": -0.001,
+  }
+  for name, weight in expected_weights.items():
+    assert name in cfg.rewards
+    assert cfg.rewards[name].weight == weight
+
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, UniformVelocityCommandCfg)
+  assert twist.velocity_buckets is not None
+  assert twist.velocity_buckets[-1][0] == 2.0
+  assert cfg.curriculum["command_vel"].func.__name__ == "StagedVelocityCommand"
+  assert cfg.events["push_robot"].func.__name__ == "staged_push_robot"
+  assert cfg.events["body_mass"].mode == "reset"
+  assert cfg.events["base_mass_offset"].mode == "reset"
+  assert cfg.sim.nan_guard.enabled
+  assert cfg.sim.nan_guard.output_dir.endswith("/go2_flat")
+  assert "nan_detection" in cfg.terminations
+  assert "state_limit" in cfg.terminations
+  assert cfg.action_safety_enabled
+  assert cfg.action_safety_max_abs == 5.0
+  curriculum_params = cfg.curriculum["command_vel"].params
+  assert curriculum_params["max_invalid_rate"] == 0.0
+  assert curriculum_params["max_nan_rate"] == 0.0
+
+  assert "body_mass" in cfg.events
+  assert "base_mass_offset" in cfg.events
+  assert cfg.events["body_mass"].params["asset_cfg"].body_names == (
+    "FL_thigh",
+    "FL_calf",
+    "FR_hip",
+    "FR_calf",
+    "RL_hip",
+    "RL_calf",
+    "RR_hip",
+    "RR_calf",
+  )
+
+  assert cfg.scene.entities is not None
+  robot_cfg = cfg.scene.entities["robot"]
+  assert robot_cfg.articulation is not None
+  assert all(
+    actuator.delay_min_lag == 1
+    and actuator.delay_max_lag == 3
+    and actuator.delay_resample_on_reset
+    for actuator in robot_cfg.articulation.actuators
+  )
+
+
 def test_g1_velocity_has_required_sensors(g1_velocity_task_ids: list[str]) -> None:
   """G1 velocity tasks should have feet/ground and self collision sensors."""
   for task_id in g1_velocity_task_ids:

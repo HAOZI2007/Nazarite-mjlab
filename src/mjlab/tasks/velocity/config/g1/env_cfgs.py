@@ -6,25 +6,44 @@ from mjlab.asset_zoo.robots import (
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
-from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
-from mjlab.sensor import (
-  ContactMatch,
-  ContactSensorCfg,
-  ObjRef,
-  RayCastSensorCfg,
-  RingPatternCfg,
-  TerrainHeightSensorCfg,
-)
+from mjlab.sensor import ContactMatch
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
-from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
+from mjlab.tasks.velocity.velocity_env_cfg import (
+  VelocityRobotSpec,
+  make_velocity_env_cfg,
+)
+
+G1_VELOCITY_ROBOT = VelocityRobotSpec(
+  body_name="pelvis",
+  foot_site_names=("left_foot", "right_foot"),
+  foot_geom_names=tuple(
+    f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 8)
+  ),
+  foot_contact=ContactMatch(
+    mode="subtree",
+    pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
+    entity="robot",
+  ),
+  self_collision=ContactMatch(
+    mode="subtree",
+    pattern="pelvis",
+    entity="robot",
+  ),
+  action_scale=G1_ACTION_SCALE,
+  foot_scan_radius=0.03,
+  foot_scan_samples=6,
+)
 
 
 def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Unitree G1 rough terrain velocity configuration."""
-  cfg = make_velocity_env_cfg()
+  cfg = make_velocity_env_cfg(
+    asymmetric=False,
+    robot=G1_VELOCITY_ROBOT,
+  )
 
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.contact_sensor_maxmatch = 500
@@ -32,60 +51,8 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.scene.entities = {"robot": get_g1_robot_cfg()}
 
-  # Set raycast sensor frame to G1 pelvis.
-  for sensor in cfg.scene.sensors or ():
-    if sensor.name == "terrain_scan":
-      assert isinstance(sensor, RayCastSensorCfg)
-      assert isinstance(sensor.frame, ObjRef)
-      sensor.frame.name = "pelvis"
-
-  site_names = ("left_foot", "right_foot")
-  geom_names = tuple(
-    f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 8)
-  )
-
-  # Wire foot height scan to per-foot sites.
-  for sensor in cfg.scene.sensors or ():
-    if sensor.name == "foot_height_scan":
-      assert isinstance(sensor, TerrainHeightSensorCfg)
-      sensor.frame = tuple(
-        ObjRef(type="site", name=s, entity="robot") for s in site_names
-      )
-      sensor.pattern = RingPatternCfg.single_ring(radius=0.03, num_samples=6)
-
-  feet_ground_cfg = ContactSensorCfg(
-    name="feet_ground_contact",
-    primary=ContactMatch(
-      mode="subtree",
-      pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
-      entity="robot",
-    ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="netforce",
-    num_slots=1,
-    track_air_time=True,
-  )
-  self_collision_cfg = ContactSensorCfg(
-    name="self_collision",
-    primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-    secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-    fields=("found", "force"),
-    reduce="none",
-    num_slots=1,
-    history_length=4,
-  )
-  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
-    feet_ground_cfg,
-    self_collision_cfg,
-  )
-
   if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
     cfg.scene.terrain.terrain_generator.curriculum = True
-
-  joint_pos_action = cfg.actions["joint_pos"]
-  assert isinstance(joint_pos_action, JointPositionActionCfg)
-  joint_pos_action.scale = G1_ACTION_SCALE
 
   cfg.viewer.body_name = "torso_link"
 
@@ -93,7 +60,6 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
   twist_cmd.viz.z_offset = 1.15
 
-  cfg.events["foot_friction"].params["asset_cfg"].geom_names = geom_names
   cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
 
   # Rationale for std values:
@@ -147,9 +113,6 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["upright"].params["asset_cfg"].body_names = ("torso_link",)
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
 
-  for reward_name in ["foot_clearance", "foot_slip"]:
-    cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
-
   cfg.rewards["body_ang_vel"].weight = -0.05
   cfg.rewards["angular_momentum"].weight = -0.02
   cfg.rewards["air_time"].weight = 0.0
@@ -157,7 +120,7 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["self_collisions"] = RewardTermCfg(
     func=mdp.self_collision_cost,
     weight=-1.0,
-    params={"sensor_name": self_collision_cfg.name, "force_threshold": 10.0},
+    params={"sensor_name": "self_collision", "force_threshold": 10.0},
   )
 
   # Apply play mode overrides.

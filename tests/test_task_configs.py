@@ -136,9 +136,16 @@ def test_play_training_action_structure_match(all_task_ids: list[str]) -> None:
 
 
 def test_play_mode_disables_push_robot(all_task_ids: list[str]) -> None:
-  """Play mode tasks should disable push_robot event."""
+  """Play mode keeps pushes only for tasks explicitly testing disturbance recovery."""
+  push_enabled_tasks = {
+    "Mjlab-Velocity-Flat-Unitree-Go2",
+    "Mjlab-Go2-Stand-v0",
+  }
   for task_id in all_task_ids:
     cfg = load_env_cfg(task_id, play=True)
-    assert "push_robot" not in cfg.events, (
-      f"Play mode task {task_id} has push_robot event, expected it to be removed"
-    )
+    if task_id in push_enabled_tasks:
+      assert "push_robot" in cfg.events
+    else:
+      assert "push_robot" not in cfg.events, (
+        f"Play mode task {task_id} has push_robot event, expected it to be removed"
+      )

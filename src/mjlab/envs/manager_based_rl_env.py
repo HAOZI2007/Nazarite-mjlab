@@ -162,6 +162,15 @@ class ManagerBasedRlEnvCfg:
   algorithms that expect unscaled reward signals (e.g., HER, static reward scaling).
   """
 
+  strict_reward_checks: bool = False
+  """Raise with environment IDs when a reward term returns NaN or Inf."""
+
+  action_safety_enabled: bool = False
+  """Protect the simulator from non-finite or catastrophic policy actions."""
+
+  action_safety_max_abs: float = 5.0
+  """Maximum action magnitude accepted before an environment is reset."""
+
 
 class ManagerBasedRlEnv:
   """Manager-based RL environment."""
@@ -230,6 +239,20 @@ class ManagerBasedRlEnv:
     # Initialize RL-specific state.
     self.common_step_counter = 0
     self.episode_length_buf = torch.zeros(
+      cfg.scene.num_envs, device=device, dtype=torch.long
+    )
+    # Episode-level numerical stability counters. They are consumed by the
+    # velocity curriculum before the corresponding environments are reset.
+    self.episode_invalid_steps = torch.zeros(
+      cfg.scene.num_envs, device=device, dtype=torch.long
+    )
+    self.episode_action_outlier_steps = torch.zeros(
+      cfg.scene.num_envs, device=device, dtype=torch.long
+    )
+    self.episode_state_limit_steps = torch.zeros(
+      cfg.scene.num_envs, device=device, dtype=torch.long
+    )
+    self.episode_nan_steps = torch.zeros(
       cfg.scene.num_envs, device=device, dtype=torch.long
     )
     self.render_mode = render_mode
@@ -327,7 +350,10 @@ class ManagerBasedRlEnv:
     self.termination_manager = TerminationManager(self.cfg.terminations, self)
     print_info(f"[INFO] {self.termination_manager}")
     self.reward_manager = RewardManager(
-      self.cfg.rewards, self, scale_by_dt=self.cfg.scale_rewards_by_dt
+      self.cfg.rewards,
+      self,
+      scale_by_dt=self.cfg.scale_rewards_by_dt,
+      strict_finite_check=self.cfg.strict_reward_checks,
     )
     print_info(f"[INFO] {self.reward_manager}")
     if len(self.cfg.curriculum) > 0:
@@ -366,6 +392,7 @@ class ManagerBasedRlEnv:
     if seed is not None:
       self.seed(seed)
     self.extras["log"] = dict()
+    self.extras["diagnostics"] = dict()
     self._reset_idx(env_ids)
     self.scene.write_data_to_sim()
     self.sim.forward()
@@ -416,7 +443,17 @@ class ManagerBasedRlEnv:
       )
 
     self.extras["log"] = dict()
-    self.action_manager.process_action(action.to(self.device))
+    self.extras["diagnostics"] = dict()
+    action = action.to(self.device)
+    action_invalid = self._detect_invalid_actions(action)
+    if action_invalid.any():
+      self.extras["diagnostics"]["action_invalid"] = action_invalid.clone()
+    # Invalid actions are replaced only for the affected environments. Normal
+    # actions remain untouched, so this is not an action-space clip.
+    safe_action = torch.where(
+      action_invalid.unsqueeze(-1), torch.zeros_like(action), action
+    )
+    self.action_manager.process_action(safe_action)
 
     for _ in range(self.cfg.decimation):
       self._sim_step_counter += 1
@@ -437,8 +474,39 @@ class ManagerBasedRlEnv:
     self.reset_terminated = self.termination_manager.terminated
     self.reset_time_outs = self.termination_manager.time_outs
 
-    self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
-    self.metrics_manager.compute()
+    state_limit = None
+    if "state_limit" in self.cfg.terminations:
+      state_limit = self.termination_manager.get_term("state_limit")
+    nan_detection = None
+    if "nan_detection" in self.cfg.terminations:
+      nan_detection = self.termination_manager.get_term("nan_detection")
+    invalid_envs = action_invalid
+    if state_limit is not None:
+      invalid_envs = invalid_envs | state_limit
+    if nan_detection is not None:
+      invalid_envs = invalid_envs | nan_detection
+    self.episode_invalid_steps += invalid_envs.long()
+    self.episode_action_outlier_steps += action_invalid.long()
+    if state_limit is not None:
+      self.episode_state_limit_steps += state_limit.long()
+    if nan_detection is not None:
+      self.episode_nan_steps += nan_detection.long()
+    self.extras["diagnostics"]["invalid_envs"] = invalid_envs.clone()
+    if state_limit is not None:
+      self.extras["diagnostics"]["state_limit"] = state_limit.clone()
+    if nan_detection is not None:
+      self.extras["diagnostics"]["nan_detection"] = nan_detection.clone()
+    self.reward_buf = self.reward_manager.compute(
+      dt=self.step_dt, invalid_envs=invalid_envs
+    )
+    self.metrics_manager.compute(invalid_envs=invalid_envs)
+
+    # An action outlier is a policy-side failure and is not represented by a
+    # termination manager term. Mark it terminated after all regular terms have
+    # been evaluated so it is reset together with physical-state failures.
+    if action_invalid.any():
+      self.reset_buf |= action_invalid
+      self.reset_terminated |= action_invalid
 
     # Reset envs that terminated/timed-out and log the episode info.
     reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
@@ -519,6 +587,17 @@ class ManagerBasedRlEnv:
 
   # Private methods.
 
+  def _detect_invalid_actions(self, action: torch.Tensor) -> torch.Tensor:
+    """Return a per-environment mask for non-finite or extreme actions."""
+    if not self.cfg.action_safety_enabled:
+      return torch.zeros(action.shape[0], dtype=torch.bool, device=self.device)
+    finite = torch.isfinite(action).all(dim=-1)
+    max_abs = torch.nan_to_num(
+      action, nan=float("inf"), posinf=float("inf"), neginf=float("inf")
+    )
+    max_abs = max_abs.abs().amax(dim=-1)
+    return ~finite | (max_abs > self.cfg.action_safety_max_abs)
+
   def _configure_gym_env_spaces(self) -> None:
     from mjlab.utils.spaces import batch_space
 
@@ -588,4 +667,8 @@ class ManagerBasedRlEnv:
     self.extras["log"].update(info)
     # reset the episode length buffer.
     self.episode_length_buf[env_ids] = 0
+    self.episode_invalid_steps[env_ids] = 0
+    self.episode_action_outlier_steps[env_ids] = 0
+    self.episode_state_limit_steps[env_ids] = 0
+    self.episode_nan_steps[env_ids] = 0
     self._manual_reset_pending[env_ids] = False

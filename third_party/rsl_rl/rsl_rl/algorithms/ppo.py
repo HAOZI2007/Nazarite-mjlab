@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import copy
 import torch
 import torch.nn as nn
 from itertools import chain
 from tensordict import TensorDict
+from typing import Any
 
 from rsl_rl.env import VecEnv
 from rsl_rl.extensions import RandomNetworkDistillation, Symmetry, resolve_rnd_config, resolve_symmetry_config
@@ -50,6 +52,13 @@ class PPO:
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
+        diagnostics_enabled: bool = True,
+        diagnostics_report_threshold: float = 100.0,
+        diagnostics_max_abs: float = 1.0e6,
+        strict_gradient_checks: bool = True,
+        recover_on_nonfinite: bool = True,
+        recovery_lr_factor: float = 0.5,
+        max_consecutive_recoveries: int = 20,
         device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -111,6 +120,139 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.diagnostics_enabled = diagnostics_enabled
+        self.diagnostics_report_threshold = diagnostics_report_threshold
+        self.diagnostics_max_abs = diagnostics_max_abs
+        self.strict_gradient_checks = strict_gradient_checks
+        self.recover_on_nonfinite = recover_on_nonfinite
+        self.recovery_lr_factor = recovery_lr_factor
+        self.max_consecutive_recoveries = max_consecutive_recoveries
+        self.recovery_count = 0
+        self.consecutive_recoveries = 0
+
+    @staticmethod
+    def _clone_to_cpu(value: Any) -> Any:
+        """Clone nested state to CPU so a recovery snapshot is independent."""
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().clone()
+        if isinstance(value, dict):
+            return {key: PPO._clone_to_cpu(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [PPO._clone_to_cpu(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(PPO._clone_to_cpu(item) for item in value)
+        return copy.deepcopy(value)
+
+    def _make_update_snapshot(self) -> dict[str, Any]:
+        """Capture all state that can be changed by one PPO update."""
+        snapshot = {
+            "actor": self._clone_to_cpu(self._raw_actor.state_dict()),
+            "critic": self._clone_to_cpu(self._raw_critic.state_dict()),
+            "optimizer": self._clone_to_cpu(self.optimizer.state_dict()),
+            "learning_rate": self.learning_rate,
+        }
+        if self.rnd:
+            snapshot["rnd"] = self._clone_to_cpu(self.rnd.state_dict())
+            snapshot["rnd_optimizer"] = self._clone_to_cpu(self.rnd.optimizer.state_dict())
+            snapshot["rnd_learning_rates"] = [group["lr"] for group in self.rnd.optimizer.param_groups]
+        return snapshot
+
+    def _restore_update_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Restore the state captured before a failed PPO update."""
+        self._raw_actor.load_state_dict(snapshot["actor"])
+        self._raw_critic.load_state_dict(snapshot["critic"])
+        self.optimizer.load_state_dict(snapshot["optimizer"])
+        if self.rnd:
+            self.rnd.load_state_dict(snapshot["rnd"])
+            self.rnd.optimizer.load_state_dict(snapshot["rnd_optimizer"])
+
+        # Restoring the optimizer can restore its old learning rate, so apply the
+        # reduced rate after loading the optimizer state.
+        self.learning_rate = max(1.0e-8, snapshot["learning_rate"] * self.recovery_lr_factor)
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = self.learning_rate
+
+        self.optimizer.zero_grad(set_to_none=True)
+        if self.rnd:
+            self.rnd.optimizer.zero_grad(set_to_none=True)
+            for param_group, learning_rate in zip(
+                self.rnd.optimizer.param_groups,
+                snapshot["rnd_learning_rates"],
+                strict=True,
+            ):
+                param_group["lr"] = max(1.0e-8, learning_rate * self.recovery_lr_factor)
+        self.storage.clear()
+
+    def _diagnose_tensor(
+        self,
+        name: str,
+        tensor: torch.Tensor,
+        *,
+        env_dim: int,
+    ) -> None:
+        """Report per-environment maxima and stop on invalid rollout values."""
+        if not self.diagnostics_enabled:
+            return
+
+        env_view = tensor.movedim(env_dim, 0).reshape(tensor.shape[env_dim], -1)
+        finite = torch.isfinite(env_view)
+        finite_per_env = finite.all(dim=1)
+        bad_envs = torch.where(~finite_per_env)[0]
+        finite_abs = torch.where(finite, env_view.abs(), torch.zeros_like(env_view))
+        max_abs = finite_abs.amax(dim=1)
+
+        if bad_envs.numel() > 0:
+            bad_list = bad_envs[:20].detach().cpu().tolist()
+            raise FloatingPointError(
+                f"PPO rollout {name} contains NaN/Inf for envs={bad_list}; "
+                f"max_finite_abs={max_abs[bad_envs].max().item():.6g}"
+            )
+
+        top_k = min(5, max_abs.numel())
+        top_values, top_envs = torch.topk(max_abs, k=top_k)
+        if top_values[0] >= self.diagnostics_report_threshold:
+            pairs = [
+                f"env={int(env_id)} max_abs={value:.6g}"
+                for env_id, value in zip(
+                    top_envs.detach().cpu().tolist(),
+                    top_values.detach().cpu().tolist(),
+                    strict=False,
+                )
+            ]
+            print(f"[PPO diagnostics] {name}: " + ", ".join(pairs))
+
+        if top_values[0] > self.diagnostics_max_abs:
+            raise FloatingPointError(
+                f"PPO rollout {name} exceeds diagnostics_max_abs="
+                f"{self.diagnostics_max_abs:.6g}; env={int(top_envs[0])}, "
+                f"max_abs={top_values[0].item():.6g}"
+            )
+
+    def _check_gradients(self, model: nn.Module, model_name: str) -> None:
+        """Raise with parameter names when a model gradient is not finite."""
+        bad_parameters: list[str] = []
+        max_grad = 0.0
+        for name, parameter in model.named_parameters():
+            if parameter.grad is None:
+                continue
+            gradient = parameter.grad.detach()
+            if not torch.isfinite(gradient).all():
+                bad_parameters.append(name)
+                continue
+            max_grad = max(max_grad, gradient.abs().max().item())
+
+        if bad_parameters:
+            raise FloatingPointError(
+                f"{model_name} gradient contains NaN/Inf in parameters "
+                f"{bad_parameters[:10]}; max_finite_grad={max_grad:.6g}"
+            )
+
+    @staticmethod
+    def _check_parameters(model: nn.Module, model_name: str) -> None:
+        """Raise when an optimizer step produced non-finite parameters."""
+        for name, parameter in model.named_parameters():
+            if not torch.isfinite(parameter).all():
+                raise FloatingPointError(f"{model_name} parameter contains NaN/Inf after optimizer step: {name}")
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         """Sample actions and store transition data."""
@@ -134,6 +276,26 @@ class PPO:
         self.critic.update_normalization(obs)
         if self.rnd:
             self.rnd.update_normalization(obs)
+
+        diagnostics = extras.get("diagnostics", {})
+        if self.transition.actions is not None:
+            invalid_actions = diagnostics.get("action_invalid")
+            if invalid_actions is not None and invalid_actions.any():
+                # The environment replaces these actions with zero and
+                # terminates the affected episodes. Keep the stored
+                # transition consistent with the action that was actually
+                # applied, and recompute its old log probability under the
+                # already-produced policy distribution.
+                self.transition.actions[invalid_actions] = 0.0
+                safe_log_prob = self.actor.get_output_log_prob(self.transition.actions).detach()
+                self.transition.actions_log_prob[invalid_actions] = safe_log_prob[invalid_actions]
+
+        if self.diagnostics_enabled:
+            observation_diagnostics = diagnostics.get("observations", {})
+            for name, tensor in observation_diagnostics.items():
+                self._diagnose_tensor(name, tensor, env_dim=0)
+            if self.transition.actions is not None:
+                self._diagnose_tensor("actions", self.transition.actions, env_dim=0)
 
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
@@ -163,6 +325,13 @@ class PPO:
     def compute_returns(self, obs: TensorDict) -> None:
         """Compute return and advantage targets from stored transitions."""
         st = self.storage
+        if self.diagnostics_enabled:
+            for name, tensor in st.observations.items():
+                self._diagnose_tensor(f"observation/{name}", tensor, env_dim=1)
+            self._diagnose_tensor("rewards", st.rewards, env_dim=1)
+            self._diagnose_tensor("values", st.values, env_dim=1)
+            for name, tensor in obs.items():
+                self._diagnose_tensor(f"last_observation/{name}", tensor, env_dim=0)
         # Compute values for the last step
         critic_hidden_state = self.critic.get_hidden_state()
         last_values = self.critic(obs).detach()
@@ -183,11 +352,49 @@ class PPO:
             st.returns[step] = advantage + st.values[step]
         # Compute the advantages
         st.advantages = st.returns - st.values
+        if self.diagnostics_enabled:
+            self._diagnose_tensor("returns", st.returns, env_dim=1)
+            self._diagnose_tensor("advantages", st.advantages, env_dim=1)
         # Normalize the advantages if per minibatch normalization is not used
         if not self.normalize_advantage_per_mini_batch:
             st.advantages = (st.advantages - st.advantages.mean()) / (st.advantages.std() + 1e-8)
 
     def update(self) -> dict[str, float]:
+        """Run one PPO update, recovering from non-finite numerical failures."""
+        if not self.recover_on_nonfinite:
+            return self._update_impl()
+
+        snapshot = self._make_update_snapshot()
+        try:
+            loss_dict = self._update_impl()
+        except FloatingPointError as error:
+            self._restore_update_snapshot(snapshot)
+            self.recovery_count += 1
+            self.consecutive_recoveries += 1
+            print(
+                f"[PPO recovery] Skipped non-finite update #{self.recovery_count}: {error}. "
+                f"Learning rate reduced to {self.learning_rate:.6g}."
+            )
+            if self.max_consecutive_recoveries > 0 and self.consecutive_recoveries > self.max_consecutive_recoveries:
+                raise FloatingPointError(
+                    f"PPO exceeded max_consecutive_recoveries={self.max_consecutive_recoveries}; last failure: {error}"
+                ) from error
+            return {
+                "value": 0.0,
+                "surrogate": 0.0,
+                "entropy": 0.0,
+                "update_skipped": 1.0,
+                "recovery_count": float(self.recovery_count),
+                "consecutive_recoveries": float(self.consecutive_recoveries),
+            }
+
+        self.consecutive_recoveries = 0
+        loss_dict["update_skipped"] = 0.0
+        loss_dict["recovery_count"] = float(self.recovery_count)
+        loss_dict["consecutive_recoveries"] = 0.0
+        return loss_dict
+
+    def _update_impl(self) -> dict[str, float]:
         """Run optimization epochs over stored batches and return mean losses."""
         mean_value_loss = 0
         mean_surrogate_loss = 0
@@ -275,14 +482,29 @@ class PPO:
             else:
                 value_loss = (batch.returns - values).pow(2).mean()
 
+            if self.strict_gradient_checks:
+                for name, value in (
+                    ("surrogate_loss", surrogate_loss),
+                    ("value_loss", value_loss),
+                    ("entropy", entropy),
+                ):
+                    if not torch.isfinite(value).all():
+                        raise FloatingPointError(f"PPO {name} contains NaN/Inf during update")
+
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            if self.strict_gradient_checks and not torch.isfinite(loss).all():
+                raise FloatingPointError("PPO total loss contains NaN/Inf during update")
 
             # RND loss
             rnd_loss = self.rnd.compute_loss(batch.observations[:original_batch_size]) if self.rnd else None  # type: ignore
+            if self.strict_gradient_checks and rnd_loss is not None and not torch.isfinite(rnd_loss).all():
+                raise FloatingPointError("PPO RND loss contains NaN/Inf during update")
 
             # Symmetry loss
             if self.symmetry:
                 symmetry_loss = self.symmetry.compute_loss(self.actor, batch, original_batch_size)
+                if self.strict_gradient_checks and not torch.isfinite(symmetry_loss).all():
+                    raise FloatingPointError("PPO symmetry loss contains NaN/Inf during update")
                 if self.symmetry.use_mirror_loss:
                     loss = loss + self.symmetry.mirror_loss_coeff * symmetry_loss
 
@@ -299,12 +521,34 @@ class PPO:
                 self.reduce_parameters()
 
             # Apply the gradients for PPO
-            nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-            nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            if self.strict_gradient_checks:
+                self._check_gradients(self.actor, "Actor")
+                self._check_gradients(self.critic, "Critic")
+                if self.rnd:
+                    self._check_gradients(self.rnd, "RND")
+            actor_grad_norm = nn.utils.clip_grad_norm_(
+                self.actor.parameters(),
+                self.max_grad_norm,
+                error_if_nonfinite=False,
+            )
+            critic_grad_norm = nn.utils.clip_grad_norm_(
+                self.critic.parameters(),
+                self.max_grad_norm,
+                error_if_nonfinite=False,
+            )
+            if self.strict_gradient_checks and (
+                not torch.isfinite(actor_grad_norm).all() or not torch.isfinite(critic_grad_norm).all()
+            ):
+                raise FloatingPointError("PPO gradient norm contains NaN/Inf before optimizer step")
             self.optimizer.step()
+            if self.strict_gradient_checks:
+                self._check_parameters(self.actor, "Actor")
+                self._check_parameters(self.critic, "Critic")
             # Apply the gradients for RND
             if self.rnd:
                 self.rnd.optimizer.step()
+                if self.strict_gradient_checks:
+                    self._check_parameters(self.rnd, "RND")
 
             # Store the losses
             mean_value_loss += value_loss.item()
@@ -430,10 +674,12 @@ class PPO:
 
         # Initialize the policy
         actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+        actor.model_name = "Actor"
         print(f"Actor Model: {actor}")
         if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
             cfg["critic"]["cnns"] = actor.cnns  # type: ignore
         critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
+        critic.model_name = "Critic"
         print(f"Critic Model: {critic}")
 
         # Initialize the storage

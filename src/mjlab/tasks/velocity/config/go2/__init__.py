@@ -6,11 +6,10 @@ from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 from .env_cfgs import (
   unitree_go2_flat_env_cfg,
   unitree_go2_rough_env_cfg,
-  unitree_go2_stand_env_cfg,
   unitree_go2_stairs_env_cfg,
+  unitree_go2_stand_env_cfg,
 )
-from .rl_cfg import unitree_go2_RNN_ppo_runner_cfg
-from .rl_cfg import unitree_go2_normal_ppo_runner_cfg
+from .rl_cfg import unitree_go2_normal_ppo_runner_cfg, unitree_go2_RNN_ppo_runner_cfg
 
 # 注册复杂地形 (Rough Terrain) 任务
 register_mjlab_task(
@@ -30,7 +29,7 @@ register_mjlab_task(
   runner_cls=VelocityOnPolicyRunner,
 )
 
-#注册平地站立任务
+# 注册平地站立任务
 register_mjlab_task(
   task_id="Mjlab-Go2-Stand-v0",
   env_cfg=unitree_go2_stand_env_cfg(),

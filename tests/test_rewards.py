@@ -271,6 +271,21 @@ def test_reward_manager_handles_neginf_values(mock_env):
   assert rewards[2] == 0.0
 
 
+def test_reward_manager_strict_checks_report_environment_ids(mock_env):
+  """Strict reward checks should expose the term and offending environments."""
+
+  def invalid_reward(env):
+    reward = torch.ones(env.num_envs, device=env.device)
+    reward[2] = float("inf")
+    return reward
+
+  cfg = {"invalid_term": RewardTermCfg(func=invalid_reward, weight=1.0, params={})}
+  manager = RewardManager(cfg, mock_env, strict_finite_check=True)
+
+  with pytest.raises(FloatingPointError, match=r"invalid_term.*envs=\[2\]"):
+    manager.compute(dt=0.01)
+
+
 def test_reward_scaling_enabled(mock_env):
   """Test that rewards are scaled by dt when scale_by_dt=True (default)."""
 

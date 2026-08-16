@@ -248,6 +248,46 @@ def test_delay_buffer_reset_partial(device):
   assert lags_after[3] == lags_before[3]
 
 
+def test_delay_buffer_resamples_lag_on_reset_and_holds_it(device):
+  """Episode mode samples on reset and does not resample during compute."""
+  buffer = DelayBuffer(
+    min_lag=1,
+    max_lag=3,
+    batch_size=4,
+    device=device,
+    resample_on_reset=True,
+    generator=make_gen(123, device),
+  )
+
+  buffer.reset()
+  lags = buffer.current_lags.clone()
+  assert torch.all((lags >= 1) & (lags <= 3))
+
+  for step in range(5):
+    buffer.append(torch.full((4, 1), float(step), device=device))
+    buffer.compute()
+    assert torch.equal(buffer.current_lags, lags)
+
+
+def test_delay_buffer_resamples_only_reset_environments(device):
+  """Partial reset changes only the selected episode latencies."""
+  buffer = DelayBuffer(
+    min_lag=1,
+    max_lag=3,
+    batch_size=4,
+    device=device,
+    resample_on_reset=True,
+    generator=make_gen(456, device),
+  )
+  buffer.reset()
+  lags_before = buffer.current_lags.clone()
+  buffer.reset(batch_ids=torch.tensor([1, 3], device=device))
+  lags_after = buffer.current_lags
+
+  assert torch.equal(lags_after[[0, 2]], lags_before[[0, 2]])
+  assert torch.all((lags_after[[1, 3]] >= 1) & (lags_after[[1, 3]] <= 3))
+
+
 def test_partial_reset_then_backfill(device):
   """Partial reset returns zeros until next append backfills."""
   B = 3

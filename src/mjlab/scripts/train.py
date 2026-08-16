@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Literal, cast
 
 import tyro
-import torch
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg, RslRlVecEnvWrapper
@@ -21,6 +20,7 @@ from mjlab.utils.os import dump_yaml, get_checkpoint_path, get_wandb_checkpoint_
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wandb import add_wandb_tags
 from mjlab.utils.wrappers import VideoRecorder
+
 
 @dataclass(frozen=True)
 class TrainConfig:
@@ -44,7 +44,6 @@ class TrainConfig:
     env_cfg = load_env_cfg(task_id)
     agent_cfg = load_rl_cfg(task_id)
     return TrainConfig(env=env_cfg, agent=agent_cfg)
-
 
 
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
@@ -147,8 +146,6 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     print("[INFO] Recording videos during training.")
 
   env = RslRlVecEnvWrapper(env, clip_actions=cfg.agent.clip_actions)
-
- 
 
   agent_cfg = asdict(cfg.agent)
   env_cfg = asdict(cfg.env)

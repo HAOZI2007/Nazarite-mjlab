@@ -56,11 +56,13 @@ class RewardManager(ManagerBase):
     env: ManagerBasedRlEnv,
     *,
     scale_by_dt: bool = True,
+    strict_finite_check: bool = False,
   ):
     self._term_names: list[str] = list()
     self._term_cfgs: list[RewardTermCfg] = list()
     self._class_term_cfgs: list[RewardTermCfg] = list()
     self._scale_by_dt = scale_by_dt
+    self._strict_finite_check = strict_finite_check
 
     self.cfg = deepcopy(cfg)
     super().__init__(env=env)
@@ -113,7 +115,9 @@ class RewardManager(ManagerBase):
       term_cfg.func.reset(env_ids=env_ids)
     return extras
 
-  def compute(self, dt: float) -> torch.Tensor:
+  def compute(
+    self, dt: float, invalid_envs: torch.Tensor | None = None
+  ) -> torch.Tensor:
     self._reward_buf[:] = 0.0
     scale = dt if self._scale_by_dt else 1.0
     for term_idx, (name, term_cfg) in enumerate(
@@ -124,8 +128,23 @@ class RewardManager(ManagerBase):
         continue
       value = term_cfg.func(self._env, **term_cfg.params)
       self._check_term_shape(name, value)
+      if invalid_envs is not None:
+        value = torch.where(invalid_envs, torch.zeros_like(value), value)
+      finite = torch.isfinite(value)
+      if self._strict_finite_check and not finite.all():
+        bad_envs = torch.where(~finite)[0][:20].detach().cpu().tolist()
+        finite_values = value[finite]
+        finite_max = (
+          f"{finite_values.abs().max().item():.6g}"
+          if finite_values.numel() > 0
+          else "none"
+        )
+        raise FloatingPointError(
+          f"Reward term '{name}' contains NaN/Inf for envs={bad_envs}; "
+          f"max_finite_abs={finite_max}"
+        )
       value = value * term_cfg.weight * scale
-      # NaN/Inf can occur from corrupted physics state; zero them to avoid policy crash.
+      # Preserve the historical safe fallback for non-strict callers.
       value = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
       self._reward_buf += value
       self._episode_sums[name] += value
@@ -161,6 +180,17 @@ class RewardManager(ManagerBase):
     if term_name not in self._term_names:
       raise ValueError(f"Term '{term_name}' not found in active terms.")
     return self._term_cfgs[self._term_names.index(term_name)]
+
+  def get_episode_sum(self, term_name: str) -> torch.Tensor:
+    """Return per-env cumulative reward for ``term_name`` in the current episode.
+
+    The values are scaled by ``weight * dt`` (when ``scale_by_dt`` is enabled).
+    Curriculum terms use this to evaluate agent performance over a completed
+    episode before the sums are reset.
+    """
+    if term_name not in self._term_names:
+      raise ValueError(f"Term '{term_name}' not found in active terms.")
+    return self._episode_sums[term_name]
 
   def _prepare_terms(self):
     for term_name, term_cfg in self.cfg.items():

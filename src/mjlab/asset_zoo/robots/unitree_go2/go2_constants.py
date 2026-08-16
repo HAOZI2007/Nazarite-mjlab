@@ -40,12 +40,12 @@ KNEE_GEAR_RATIO = HIP_GEAR_RATIO * 1.5
 HIP_ACTUATOR = ElectricActuator(
   reflected_inertia=reflected_inertia(ROTOR_INERTIA, HIP_GEAR_RATIO),
   velocity_limit=30.0,  # Go2 最大关节速度
-  effort_limit=23.7,    # Go2 髋/大腿关节峰值扭矩
+  effort_limit=23.7,  # Go2 髋/大腿关节峰值扭矩
 )
 KNEE_ACTUATOR = ElectricActuator(
   reflected_inertia=reflected_inertia(ROTOR_INERTIA, KNEE_GEAR_RATIO),
   velocity_limit=20.0,
-  effort_limit=35.55,   # 小腿关节通过连杆/减速拥有更高等效扭矩
+  effort_limit=35.55,  # 小腿关节通过连杆/减速拥有更高等效扭矩
 )
 
 NATURAL_FREQ = 10 * 2.0 * 3.1415926535  # 10Hz
@@ -79,10 +79,11 @@ GO2_KNEE_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
 INIT_STATE = EntityCfg.InitialStateCfg(
   pos=(0.0, 0.0, 0.32),  # Go2 初始高度比 Go1 略高
   joint_pos={
-    ".*thigh_joint": 0.8,  # 大腿稍微前伸
+    "F.*thigh_joint": 0.8,  # 前腿大腿 (FL, FR)
+    "R.*thigh_joint": 1.0,  # 后腿大腿 (RL, RR)
     ".*calf_joint": -1.5,  # 小腿往后收
-    ".*R_hip_joint": 0.1,  
-    ".*L_hip_joint": -0.1, 
+    ".*L_hip_joint": 0.1,  # 左腿髋外展 (FL, RL)
+    ".*R_hip_joint": -0.1,  # 右腿髋外展 (FR, RR)
   },
   joint_vel={".*": 0.0},
 )

@@ -98,6 +98,9 @@ def get_base_metadata(
     "observation_terms_scale": observation_term_scale,
     "observation_terms_flatten_history_dim": observation_term_flatten_history_dim,
     "observation_terms_history_length": observation_term_history_length,
+    "observation_history_ordering": env.observation_manager.cfg[
+      "actor"
+    ].history_ordering,
     "observation_terms_clip": observation_term_clip,
     "action_scale": joint_action._scale[0].cpu().tolist()
     if isinstance(joint_action._scale, torch.Tensor)

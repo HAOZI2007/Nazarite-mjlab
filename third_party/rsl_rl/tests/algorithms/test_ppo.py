@@ -10,6 +10,8 @@ from __future__ import annotations
 import torch
 from tensordict import TensorDict
 
+import pytest
+
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
@@ -195,6 +197,93 @@ class TestGAEComputation:
         adv = ppo.storage.advantages.flatten()
         assert abs(adv.mean().item()) < 1e-5, "Advantages should be zero-mean"
         assert abs(adv.std().item() - 1.0) < 0.1, "Advantages should be unit-std"
+
+
+def test_rollout_diagnostics_reports_environment_index() -> None:
+    """Large rollout values should identify the offending environment."""
+    ppo, _obs = _build_ppo(diagnostics_max_abs=2.0)
+    tensor = torch.tensor([[[0.0], [1.0]], [[0.0], [3.0]]])
+
+    with pytest.raises(FloatingPointError, match=r"env=1"):
+        ppo._diagnose_tensor("returns", tensor, env_dim=1)
+
+
+def test_strict_gradient_check_reports_parameter_name() -> None:
+    """Non-finite gradients should identify the affected model parameter."""
+    ppo, _obs = _build_ppo()
+    parameter = next(ppo.critic.parameters())
+    parameter.grad = torch.full_like(parameter, float("nan"))
+
+    with pytest.raises(FloatingPointError, match=r"Critic gradient.*parameters"):
+        ppo._check_gradients(ppo.critic, "Critic")
+
+
+def test_nonfinite_update_rolls_back_and_continues(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed update restores model state and returns finite recovery metrics."""
+    ppo, _obs = _build_ppo(recovery_lr_factor=0.5, max_consecutive_recoveries=3)
+
+    # Create Adam state so the test also verifies optimizer rollback.
+    for parameter in ppo.actor.parameters():
+        parameter.grad = torch.ones_like(parameter)
+    for parameter in ppo.critic.parameters():
+        parameter.grad = torch.ones_like(parameter)
+    ppo.optimizer.step()
+    ppo.optimizer.zero_grad(set_to_none=True)
+
+    actor_before = [parameter.detach().clone() for parameter in ppo.actor.parameters()]
+    critic_before = [parameter.detach().clone() for parameter in ppo.critic.parameters()]
+    optimizer_before = ppo._clone_to_cpu(ppo.optimizer.state_dict())
+    learning_rate_before = ppo.learning_rate
+
+    def fail_update() -> dict[str, float]:
+        with torch.no_grad():
+            for parameter in ppo.actor.parameters():
+                parameter.add_(1.0)
+            for parameter in ppo.critic.parameters():
+                parameter.mul_(2.0)
+        for state in ppo.optimizer.state.values():
+            for value in state.values():
+                if isinstance(value, torch.Tensor):
+                    value.add_(1.0)
+        raise FloatingPointError("synthetic non-finite gradient")
+
+    monkeypatch.setattr(ppo, "_update_impl", fail_update)
+    loss_dict = ppo.update()
+
+    assert loss_dict == {
+        "value": 0.0,
+        "surrogate": 0.0,
+        "entropy": 0.0,
+        "update_skipped": 1.0,
+        "recovery_count": 1.0,
+        "consecutive_recoveries": 1.0,
+    }
+    assert ppo.learning_rate == learning_rate_before * 0.5
+    assert all(torch.equal(parameter, before) for parameter, before in zip(ppo.actor.parameters(), actor_before))
+    assert all(torch.equal(parameter, before) for parameter, before in zip(ppo.critic.parameters(), critic_before))
+    optimizer_after = ppo.optimizer.state_dict()
+    assert optimizer_after["state"].keys() == optimizer_before["state"].keys()
+    for parameter_id, before_state in optimizer_before["state"].items():
+        for state_name, before_value in before_state.items():
+            after_value = optimizer_after["state"][parameter_id][state_name]
+            if isinstance(before_value, torch.Tensor):
+                assert torch.equal(after_value, before_value)
+            else:
+                assert after_value == before_value
+    assert ppo.storage.step == 0
+
+
+def test_nonfinite_update_stops_after_recovery_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Persistent numerical failures eventually stop instead of hiding a broken run."""
+    ppo, _obs = _build_ppo(max_consecutive_recoveries=1)
+
+    def fail_update() -> dict[str, float]:
+        raise FloatingPointError("synthetic non-finite gradient")
+
+    monkeypatch.setattr(ppo, "_update_impl", fail_update)
+    ppo.update()
+    with pytest.raises(FloatingPointError, match="max_consecutive_recoveries=1"):
+        ppo.update()
 
 
 class TestTimeoutBootstrapping:

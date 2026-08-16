@@ -44,6 +44,28 @@ def root_height_below_minimum(
   return asset.data.root_link_pos_w[:, 2] < minimum_height
 
 
+def state_limit(
+  env: ManagerBasedRlEnv,
+  max_joint_vel: float,
+  max_joint_acc: float,
+  max_root_lin_vel: float,
+  max_root_ang_vel: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Terminate environments whose finite state has become physically invalid."""
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  joint_acc = asset.data.joint_acc[:, asset_cfg.joint_ids]
+  root_lin_vel = asset.data.root_link_lin_vel_b
+  root_ang_vel = asset.data.root_link_ang_vel_b
+  return (
+    (joint_vel.abs().amax(dim=1) > max_joint_vel)
+    | (joint_acc.abs().amax(dim=1) > max_joint_acc)
+    | (root_lin_vel.abs().amax(dim=1) > max_root_lin_vel)
+    | (root_ang_vel.abs().amax(dim=1) > max_root_ang_vel)
+  )
+
+
 def nan_detection(env: ManagerBasedRlEnv) -> torch.Tensor:
   """Terminate environments that have NaN/Inf values in their physics state."""
   return NanGuard.detect_nans(env.sim.data)

@@ -75,6 +75,33 @@ class TestMLPModelModes:
         expected = critic.mlp(latent)
         assert torch.allclose(output, expected)
 
+    def test_non_finite_input_raises_diagnostic_error(self) -> None:
+        """Non-finite observations should fail before entering the policy network."""
+        actor, obs = _make_mlp_model(stochastic=True)
+        obs["policy"][0, 0] = float("nan")
+
+        with pytest.raises(FloatingPointError, match="Actor input latent"):
+            actor.model_name = "Actor"
+            actor(obs, stochastic_output=True)
+
+    def test_non_finite_network_output_raises_diagnostic_error(self) -> None:
+        """Non-finite network outputs should identify the model and output stage."""
+        actor, obs = _make_mlp_model(stochastic=True)
+
+        class NonFiniteModule(torch.nn.Module):
+            def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+                return torch.full(
+                    (inputs.shape[0], NUM_ACTIONS),
+                    float("nan"),
+                    device=inputs.device,
+                )
+
+        actor.mlp = NonFiniteModule()
+        actor.model_name = "Actor"
+
+        with pytest.raises(FloatingPointError, match="Actor network output"):
+            actor(obs, stochastic_output=True)
+
 
 class TestMLPModelNormalization:
     """Tests for observation normalization integration."""

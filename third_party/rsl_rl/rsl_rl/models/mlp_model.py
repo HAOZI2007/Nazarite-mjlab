@@ -27,6 +27,9 @@ class MLPModel(nn.Module):
     is_recurrent: bool = False
     """Whether the model contains a recurrent module."""
 
+    model_name: str = "MLPModel"
+    """Human-readable name used in numerical-stability diagnostics."""
+
     def __init__(
         self,
         obs: TensorDict,
@@ -79,6 +82,29 @@ class MLPModel(nn.Module):
         if self.distribution is not None:
             self.distribution.init_mlp_weights(self.mlp)
 
+    def _check_finite(self, value: torch.Tensor, context: str) -> None:
+        """Raise a diagnostic error when a model tensor is not finite."""
+        finite = torch.isfinite(value)
+        if bool(finite.all()):
+            return
+
+        if value.ndim > 0:
+            flat_finite = finite.reshape(value.shape[0], -1)
+            bad_indices = torch.where(~flat_finite.all(dim=1))[0]
+            bad_indices = bad_indices[:10].detach().cpu().tolist()
+        else:
+            bad_indices = []
+
+        finite_values = value[finite]
+        if finite_values.numel() > 0:
+            value_range = f"finite_min={finite_values.min().item():.6g}, finite_max={finite_values.max().item():.6g}"
+        else:
+            value_range = "no finite values"
+
+        raise FloatingPointError(
+            f"{self.model_name} {context} contains NaN/Inf; bad_indices={bad_indices}; {value_range}"
+        )
+
     def forward(
         self,
         obs: TensorDict,
@@ -97,14 +123,22 @@ class MLPModel(nn.Module):
         obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
         # Get MLP input latent
         latent = self.get_latent(obs, masks, hidden_state)
+        self._check_finite(latent, "input latent")
         # MLP forward pass
         mlp_output = self.mlp(latent)
+        self._check_finite(mlp_output, "network output")
         # If stochastic output is requested, update the distribution and sample from it, otherwise return MLP output
         if self.distribution is not None:
             if stochastic_output:
                 self.distribution.update(mlp_output)
-                return self.distribution.sample()
-            return self.distribution.deterministic_output(mlp_output)
+                self._check_finite(self.distribution.mean, "distribution mean")
+                self._check_finite(self.distribution.std, "distribution std")
+                sample = self.distribution.sample()
+                self._check_finite(sample, "sampled output")
+                return sample
+            deterministic_output = self.distribution.deterministic_output(mlp_output)
+            self._check_finite(deterministic_output, "deterministic output")
+            return deterministic_output
         return mlp_output
 
     def get_latent(

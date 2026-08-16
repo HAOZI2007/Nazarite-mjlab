@@ -9,31 +9,88 @@ from mjlab.asset_zoo.robots import (
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
-from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers import TerminationTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import (
-  ContactMatch,
-  ContactSensorCfg,
-  ObjRef,
-  RayCastSensorCfg,
-  RingPatternCfg,
-  TerrainHeightSensorCfg,
-)
+from mjlab.sensor import ContactMatch
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
-from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
+from mjlab.tasks.velocity.velocity_env_cfg import (
+  VelocityContactSensorSpec,
+  VelocityRobotSpec,
+  make_velocity_env_cfg,
+)
 
 TerrainType = Literal["rough", "obstacles"]
+
+
+GO1_VELOCITY_ROBOT = VelocityRobotSpec(
+  body_name="trunk",
+  foot_site_names=("FR", "FL", "RR", "RL"),
+  foot_geom_names=tuple(f"{name}_foot_collision" for name in ("FR", "FL", "RR", "RL")),
+  foot_contact=ContactMatch(
+    mode="geom",
+    pattern=tuple(f"{name}_foot_collision" for name in ("FR", "FL", "RR", "RL")),
+    entity="robot",
+  ),
+  self_collision=ContactMatch(
+    mode="subtree",
+    pattern="trunk",
+    entity="robot",
+  ),
+  action_scale=GO1_ACTION_SCALE,
+  foot_scan_radius=0.04,
+  foot_scan_samples=4,
+  extra_contact_sensors=(
+    VelocityContactSensorSpec(
+      name="thigh_ground_touch",
+      primary=ContactMatch(
+        mode="geom",
+        entity="robot",
+        pattern=tuple(
+          f"{leg}_thigh_collision{i}"
+          for leg in ("FR", "FL", "RR", "RL")
+          for i in (1, 2, 3)
+        ),
+      ),
+      secondary=ContactMatch(mode="body", pattern="terrain"),
+      history_length=4,
+    ),
+    VelocityContactSensorSpec(
+      name="shank_ground_touch",
+      primary=ContactMatch(
+        mode="geom",
+        entity="robot",
+        pattern=tuple(
+          f"{leg}_calf_collision{i}" for leg in ("FR", "FL", "RR", "RL") for i in (1, 2)
+        ),
+      ),
+      secondary=ContactMatch(mode="body", pattern="terrain"),
+      history_length=4,
+    ),
+    VelocityContactSensorSpec(
+      name="trunk_ground_touch",
+      primary=ContactMatch(
+        mode="geom",
+        entity="robot",
+        pattern=("trunk_collision", "head_collision"),
+      ),
+      secondary=ContactMatch(mode="body", pattern="terrain"),
+      history_length=4,
+    ),
+  ),
+)
 
 
 def unitree_go1_rough_env_cfg(
   play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Create Unitree Go1 rough terrain velocity configuration."""
-  cfg = make_velocity_env_cfg()
+  cfg = make_velocity_env_cfg(
+    asymmetric=False,
+    robot=GO1_VELOCITY_ROBOT,
+  )
 
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.mujoco.impratio = 10
@@ -42,105 +99,9 @@ def unitree_go1_rough_env_cfg(
 
   cfg.scene.entities = {"robot": get_go1_robot_cfg()}
 
-  # Set raycast sensor frame to Go1 trunk.
-  for sensor in cfg.scene.sensors or ():
-    if sensor.name == "terrain_scan":
-      assert isinstance(sensor, RayCastSensorCfg)
-      assert isinstance(sensor.frame, ObjRef)
-      sensor.frame.name = "trunk"
-
-  foot_names = ("FR", "FL", "RR", "RL")
-  site_names = ("FR", "FL", "RR", "RL")
-  geom_names = tuple(f"{name}_foot_collision" for name in foot_names)
-
-  # Wire foot height scan to per-foot sites.
-  for sensor in cfg.scene.sensors or ():
-    if sensor.name == "foot_height_scan":
-      assert isinstance(sensor, TerrainHeightSensorCfg)
-      sensor.frame = tuple(
-        ObjRef(type="site", name=s, entity="robot") for s in site_names
-      )
-      sensor.pattern = RingPatternCfg.single_ring(radius=0.04, num_samples=4)
-
-  feet_ground_cfg = ContactSensorCfg(
-    name="feet_ground_contact",
-    primary=ContactMatch(mode="geom", pattern=geom_names, entity="robot"),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="netforce",
-    num_slots=1,
-    track_air_time=True,
-  )
-  self_collision_cfg = ContactSensorCfg(
-    name="self_collision",
-    primary=ContactMatch(mode="subtree", pattern="trunk", entity="robot"),
-    secondary=ContactMatch(mode="subtree", pattern="trunk", entity="robot"),
-    fields=("found", "force"),
-    reduce="none",
-    num_slots=1,
-    history_length=4,
-  )
-  thigh_geom_names = tuple(
-    f"{leg}_thigh_collision{i}" for leg in foot_names for i in (1, 2, 3)
-  )
-  thigh_ground_cfg = ContactSensorCfg(
-    name="thigh_ground_touch",
-    primary=ContactMatch(
-      mode="geom",
-      entity="robot",
-      pattern=thigh_geom_names,
-    ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="none",
-    num_slots=1,
-    history_length=4,
-  )
-  calf_geom_names = tuple(
-    f"{leg}_calf_collision{i}" for leg in foot_names for i in (1, 2)
-  )
-  shank_ground_cfg = ContactSensorCfg(
-    name="shank_ground_touch",
-    primary=ContactMatch(
-      mode="geom",
-      entity="robot",
-      pattern=calf_geom_names,
-    ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="none",
-    num_slots=1,
-    history_length=4,
-  )
-  trunk_head_ground_cfg = ContactSensorCfg(
-    name="trunk_ground_touch",
-    primary=ContactMatch(
-      mode="geom",
-      entity="robot",
-      pattern=("trunk_collision", "head_collision"),
-    ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="none",
-    num_slots=1,
-    history_length=4,
-  )
-  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
-    feet_ground_cfg,
-    self_collision_cfg,
-    thigh_ground_cfg,
-    shank_ground_cfg,
-    trunk_head_ground_cfg,
-  )
-
   if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
     cfg.scene.terrain.terrain_generator.curriculum = True
 
-  joint_pos_action = cfg.actions["joint_pos"]
-  assert isinstance(joint_pos_action, JointPositionActionCfg)
-  joint_pos_action.scale = GO1_ACTION_SCALE
-
-  cfg.viewer.body_name = "trunk"
   cfg.viewer.distance = 1.5
   cfg.viewer.elevation = -10.0
 
@@ -150,7 +111,9 @@ def unitree_go1_rough_env_cfg(
     mode="startup",
     func=envs_mdp.dr.geom_friction,
     params={
-      "asset_cfg": SceneEntityCfg("robot", geom_names=geom_names),
+      "asset_cfg": SceneEntityCfg(
+        "robot", geom_names=GO1_VELOCITY_ROBOT.foot_geom_names
+      ),
       "operation": "abs",
       "axes": [0],
       "ranges": (0.3, 1.5),
@@ -161,7 +124,9 @@ def unitree_go1_rough_env_cfg(
     mode="startup",
     func=envs_mdp.dr.geom_friction,
     params={
-      "asset_cfg": SceneEntityCfg("robot", geom_names=geom_names),
+      "asset_cfg": SceneEntityCfg(
+        "robot", geom_names=GO1_VELOCITY_ROBOT.foot_geom_names
+      ),
       "operation": "abs",
       "distribution": "log_uniform",
       "axes": [1],
@@ -173,7 +138,9 @@ def unitree_go1_rough_env_cfg(
     mode="startup",
     func=envs_mdp.dr.geom_friction,
     params={
-      "asset_cfg": SceneEntityCfg("robot", geom_names=geom_names),
+      "asset_cfg": SceneEntityCfg(
+        "robot", geom_names=GO1_VELOCITY_ROBOT.foot_geom_names
+      ),
       "operation": "abs",
       "distribution": "log_uniform",
       "axes": [2],
@@ -181,8 +148,6 @@ def unitree_go1_rough_env_cfg(
       "shared_random": True,
     },
   )
-  cfg.events["base_com"].params["asset_cfg"].body_names = ("trunk",)
-
   cfg.rewards["pose"].params["std_standing"] = {
     r".*(FR|FL|RR|RL)_(hip|thigh)_joint.*": 0.05,
     r".*(FR|FL|RR|RL)_calf_joint.*": 0.1,
@@ -196,12 +161,7 @@ def unitree_go1_rough_env_cfg(
     r".*(FR|FL|RR|RL)_calf_joint.*": 0.6,
   }
 
-  cfg.rewards["upright"].params["asset_cfg"].body_names = ("trunk",)
   cfg.rewards["upright"].params["terrain_sensor_names"] = ("terrain_scan",)
-  cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("trunk",)
-
-  for reward_name in ["foot_clearance", "foot_slip"]:
-    cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
 
   cfg.rewards["body_ang_vel"].weight = 0.0
   cfg.rewards["angular_momentum"].weight = 0.0
@@ -211,17 +171,17 @@ def unitree_go1_rough_env_cfg(
   cfg.rewards["self_collisions"] = RewardTermCfg(
     func=mdp.self_collision_cost,
     weight=-0.1,
-    params={"sensor_name": self_collision_cfg.name},
+    params={"sensor_name": "self_collision"},
   )
   cfg.rewards["shank_collision"] = RewardTermCfg(
     func=mdp.self_collision_cost,
     weight=-0.1,
-    params={"sensor_name": shank_ground_cfg.name},
+    params={"sensor_name": "shank_ground_touch"},
   )
   cfg.rewards["trunk_head_collision"] = RewardTermCfg(
     func=mdp.self_collision_cost,
     weight=-0.1,
-    params={"sensor_name": trunk_head_ground_cfg.name},
+    params={"sensor_name": "trunk_ground_touch"},
   )
 
   # On rough terrain the quadruped tilts significantly; don't terminate on
@@ -230,7 +190,7 @@ def unitree_go1_rough_env_cfg(
 
   cfg.terminations["illegal_contact"] = TerminationTermCfg(
     func=mdp.illegal_contact,
-    params={"sensor_name": thigh_ground_cfg.name},
+    params={"sensor_name": "thigh_ground_touch"},
   )
 
   # Apply play mode overrides.

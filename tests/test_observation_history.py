@@ -610,3 +610,47 @@ def test_term_major_ordering(mock_env, device):
   # Verify term-major ordering.
   assert result == expected_term_major, f"Expected term-major ordering, got {result}"
   assert result != expected_time_major, "Should not match time-major"
+
+
+def test_time_major_ordering(mock_env, device):
+  """Time-major history interleaves all terms within each frame."""
+
+  def obs_A(env):
+    return torch.tensor([[100.0, 101.0]] * env.num_envs, device=device)
+
+  def obs_B(env):
+    return torch.tensor([[200.0, 201.0, 202.0]] * env.num_envs, device=device)
+
+  cfg = {
+    "actor": ObservationGroupCfg(
+      terms={
+        "term_A": ObservationTermCfg(func=obs_A, params={}),
+        "term_B": ObservationTermCfg(func=obs_B, params={}),
+      },
+      history_length=3,
+      history_ordering="time",
+    ),
+  }
+
+  manager = ObservationManager(cfg, mock_env)
+  obs = manager.compute()
+  policy_obs = obs["actor"]
+  assert isinstance(policy_obs, torch.Tensor)
+  assert policy_obs.shape == (4, 15)
+  assert policy_obs[0].cpu().tolist() == [
+    100.0,
+    101.0,
+    200.0,
+    201.0,
+    202.0,
+    100.0,
+    101.0,
+    200.0,
+    201.0,
+    202.0,
+    100.0,
+    101.0,
+    200.0,
+    201.0,
+    202.0,
+  ]

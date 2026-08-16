@@ -86,6 +86,14 @@ class ActuatorCfg(ABC):
   """Stagger lag resampling across environments so they don't all update
   on the same step."""
 
+  delay_resample_on_reset: bool = False
+  """Sample one command lag per environment at reset and hold it per episode.
+
+  When enabled, the sampled lag remains fixed until that environment is reset
+  again, matching a fixed communication latency during an episode.
+  ``delay_hold_prob`` and ``delay_update_period`` are ignored.
+  """
+
   def __post_init__(self) -> None:
     if self.armature is not None:
       assert self.armature >= 0.0, "armature must be non-negative."
@@ -319,6 +327,7 @@ class Actuator(ABC, Generic[ActuatorCfgT]):
       hold_prob=self.cfg.delay_hold_prob,
       update_period=self.cfg.delay_update_period,
       per_env_phase=self.cfg.delay_per_env_phase,
+      resample_on_reset=self.cfg.delay_resample_on_reset,
     )
 
   def apply_delay(self, cmd: ActuatorCmd) -> ActuatorCmd:

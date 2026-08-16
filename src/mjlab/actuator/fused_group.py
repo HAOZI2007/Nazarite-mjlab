@@ -88,6 +88,7 @@ class _FusedGroup:
   hold_prob: float
   update_period: int
   per_env_phase: bool
+  resample_on_reset: bool
   absorbed_actuators: list[Actuator] = field(default_factory=list)
   params: dict[str, torch.Tensor] = field(default_factory=dict, init=False)
   delay_buffer: DelayBuffer | None = field(default=None, init=False)
@@ -134,6 +135,7 @@ class FusedActuatorGroup:
         act.cfg.delay_hold_prob,
         act.cfg.delay_update_period,
         act.cfg.delay_per_env_phase,
+        act.cfg.delay_resample_on_reset,
       )
       grouped.setdefault(key, []).append(act)
 
@@ -151,6 +153,7 @@ class FusedActuatorGroup:
           hold_prob=cfg.delay_hold_prob,
           update_period=cfg.delay_update_period,
           per_env_phase=cfg.delay_per_env_phase,
+          resample_on_reset=cfg.delay_resample_on_reset,
           absorbed_actuators=list(acts),
         )
       )
@@ -188,6 +191,7 @@ class FusedActuatorGroup:
           hold_prob=group.hold_prob,
           update_period=group.update_period,
           per_env_phase=group.per_env_phase,
+          resample_on_reset=group.resample_on_reset,
         )
         # Alias the shared buffer into each absorbed actuator so per-actuator
         # reset and set_lags operate on it.

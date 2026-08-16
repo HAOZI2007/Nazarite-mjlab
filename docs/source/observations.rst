@@ -135,10 +135,17 @@ before concatenating across terms.
     [A_t0, A_t1, A_t2, B_t0, B_t1, B_t2]
      └─ A history ──┘  └─ B history ─┘
 
-Some frameworks use **time-major** ordering instead, where full frames
-are built at each timestep before concatenating across time. Transferring
-policies between frameworks with different orderings requires reindexing
-the observation vector.
+Set ``history_ordering="time"`` on an observation group to use
+**time-major** ordering instead, where each frame is built before
+concatenating across time:
+
+.. code-block:: text
+
+    [A_t0, B_t0, A_t1, B_t1, A_t2, B_t2]
+
+This is useful for frame-stacked MLP policies and matches the layout used by
+the Go2 velocity template. Transferring policies between frameworks with
+different orderings requires reindexing the observation vector.
 
 Delay
 ^^^^^

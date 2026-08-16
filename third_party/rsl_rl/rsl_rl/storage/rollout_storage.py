@@ -289,7 +289,8 @@ class RolloutStorage:
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
                 if self.saved_hidden_state_a is not None:
                     hidden_state_a_batch = [
-                        saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                        saved_hidden_state
+                        .permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
                         .transpose(1, 0)
                         .contiguous()
                         for saved_hidden_state in self.saved_hidden_state_a
@@ -302,7 +303,8 @@ class RolloutStorage:
                     hidden_state_a_batch = None
                 if self.saved_hidden_state_c is not None:
                     hidden_state_c_batch = [
-                        saved_hidden_state.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
+                        saved_hidden_state
+                        .permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj]
                         .transpose(1, 0)
                         .contiguous()
                         for saved_hidden_state in self.saved_hidden_state_c
