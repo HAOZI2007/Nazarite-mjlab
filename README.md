@@ -1,6 +1,7 @@
 # Nazarite-mjlab
 
-本项目极大程度参考了山东华宇工学院 HYNova 战队轮足机器人项目的开源仓库（https://github.com/zeitvex/RC_WheelLeg/tree/main）。在这里十分感谢HYNova战队对本框架的大力支持。
+本项目极大程度参考了山东华宇工学院 HYNova 战队轮足机器人项目的开源仓库（https://github.com/zeitvex/RC_WheelLeg/tree/main）。
+在这里十分感谢HYNova战队对本框架的大力支持。
 
 Nazarite东莞理工学院行者实验室 轮腿机器人 MuJoCo 强化学习与 sim-to-real 工程。
 
