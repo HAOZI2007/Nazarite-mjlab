@@ -1,0 +1,9 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/Train/Nazarite/mjlab/.venv/bin/python",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/Train/Nazarite/mjlab/src",
+    "${workspaceFolder}/Train/Nazarite/mjlab/RSL-RL",
+    "${workspaceFolder}/Train/Nazarite/Nazarite-src"
+  ],
+  "python.analysis.stubPath": "${workspaceFolder}/Train/Nazarite/mjlab/typings"
+}
