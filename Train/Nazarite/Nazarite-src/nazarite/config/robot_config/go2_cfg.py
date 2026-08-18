@@ -3,14 +3,7 @@ from pathlib import Path
 import mujoco
 
 from mjlab.actuator import BuiltinPositionActuatorCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
-from mjlab.sensor import (
-    ObjRef,
-    RingPatternCfg,
-    TerrainHeightSensorCfg,
-)
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
-from mjlab.utils.spec_config import CollisionCfg
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 GO2_XML = _PROJECT_ROOT / "MJCF-Manager" / "Robots" / "GO2" / "xmls" / "go2.xml"
@@ -25,7 +18,7 @@ GO2_HIP_JOINT_PATTERNS = (
 GO2_CALF_JOINT_PATTERNS = (
     r".*_calf_joint",
 )
-#足部传感器
+# 足端名称.
 GO2_FOOT_GEOMS = ("FL", "FR", "RL", "RR")
 GO2_FOOT_SITES = ("FL", "FR", "RL", "RR")
 GO2_FOOT_BODIES = (
@@ -34,6 +27,19 @@ GO2_FOOT_BODIES = (
     "RL_foot",
     "RR_foot",
 )
+GO2_THIGH_BODIES = (
+    "FL_thigh",
+    "FR_thigh",
+    "RL_thigh",
+    "RR_thigh",
+)
+GO2_CALF_BODIES = (
+    "FL_calf",
+    "FR_calf",
+    "RL_calf",
+    "RR_calf",
+)
+GO2_BASE_BODY = "base_link"
 
 #获取 MJCF XML
 def get_spec() -> mujoco.MjSpec:
@@ -43,72 +49,44 @@ def get_spec() -> mujoco.MjSpec:
         spec.delete(act)
     return spec
 
-#执行器增益参数
-STIFFNESS_LEG = 40.0
-DAMPING_LEG = 1.0
+# 执行器参数, 与 mjlab 的 Go2 配置保持一致.
+STIFFNESS_HIP = 15.89524265323492
+DAMPING_HIP = 1.0119225759919113
+ARMATURE_HIP = 0.004026312
+STIFFNESS_CALF = 35.76429596977857
+DAMPING_CALF = 2.2768257959818006
+ARMATURE_CALF = 0.009059202
 
-#腿部执行器配置
+# 腿部执行器配置.
 GO2_HIP_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
     target_names_expr=GO2_HIP_JOINT_PATTERNS,
-    stiffness=STIFFNESS_LEG,
-    damping=DAMPING_LEG,
+    stiffness=STIFFNESS_HIP,
+    damping=DAMPING_HIP,
     effort_limit=23.7,
+    armature=ARMATURE_HIP,
 )
 GO2_CALF_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
     target_names_expr=GO2_CALF_JOINT_PATTERNS,
-    stiffness=STIFFNESS_LEG,
-    damping=DAMPING_LEG,
-    effort_limit=45.43,
+    stiffness=STIFFNESS_CALF,
+    damping=DAMPING_CALF,
+    effort_limit=35.55,
+    armature=ARMATURE_CALF,
 )
 ARTICULATION_CFG = EntityArticulationInfoCfg(
     actuators=(GO2_HIP_ACTUATOR_CFG, GO2_CALF_ACTUATOR_CFG),
     soft_joint_pos_limit_factor=0.95,
 )
 
-#足端接触传感器
-GO2_FEET_GROUND_CFG = ContactSensorCfg(
-    name="feet_ground_contact",
+# 按执行器分组的 action scale, 与 mjlab Go2 保持一致.
+GO2_ACTION_SCALE = {
+    r".*_hip_joint": 0.25 * 23.7 / STIFFNESS_HIP,
+    r".*_thigh_joint": 0.25 * 23.7 / STIFFNESS_HIP,
+    r".*_calf_joint": 0.25 * 35.55 / STIFFNESS_CALF,
+}
 
-    primary=ContactMatch(
-        mode="geom",
-        pattern=GO2_FOOT_GEOMS,
-        entity="robot",
-    ),
-
-    secondary=ContactMatch(
-        mode="body",
-        pattern="terrain",
-    ),
-
-    fields=("found", "force"),
-    reduce="netforce",
-    num_slots=1,
-    track_air_time=True,
-)
-#足端高度传感器
-GO2_FEET_HEIGHT_CFG = TerrainHeightSensorCfg(
-    name="foot_height_scan",
-
-    frame=(
-        ObjRef(type="site", name="FL", entity="robot"),
-        ObjRef(type="site", name="FR", entity="robot"),
-        ObjRef(type="site", name="RL", entity="robot"),
-        ObjRef(type="site", name="RR", entity="robot"),
-    ),
-
-    ray_alignment="yaw",
-    max_distance=1.0,
-    exclude_parent_body=True,
-    include_geom_groups=(0,),
-
-    pattern=RingPatternCfg.single_ring(
-        radius=0.04,
-        num_samples=4,
-    ),
-)
-#GO2的初始姿态
+# Go2 的初始姿态.
 GO2_INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.27),
+    pos=(0.0, 0.0, 0.32),
 
     rot=(1.0, 0.0, 0.0, 0.0),
 
@@ -116,9 +94,9 @@ GO2_INIT_STATE = EntityCfg.InitialStateCfg(
     ang_vel=(0.0, 0.0, 0.0),
 
     joint_pos={
-        r".*_hip_joint": 0.0,
-        r".*_thigh_joint": 0.9,
-        r".*_calf_joint": -1.8,
+        r"F.*thigh_joint": 0.8,
+        r"R.*thigh_joint": 1.0,
+        r".*calf_joint": -1.5,
     },
 
     joint_vel={
