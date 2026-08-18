@@ -1,0 +1,54 @@
+# Python cache and local tooling.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.tox/
+
+# Local virtual environments.
+.venv/
+venv/
+env/
+
+# IDE and notebook local state.
+.vscode/
+.idea/
+**/.ipynb_checkpoints/
+
+# Reinforcement-learning logs and experiment outputs.
+**/wandb/
+**/logs/
+**/artifacts/
+**/benchmark_results/
+**/onnx/
+**/videos/
+**/motions/
+**/*_rerun*
+
+# Generated model and export files.
+*.pt
+*.pth
+*.onnx
+
+# MuJoCo and local debug outputs.
+**/MUJOCO_LOG.TXT
+debug.py
+render_robots.py
+
+# Build outputs.
+**/third_party/rsl_rl/build/
+**/_build/*
+**/generated/*
+build/
+dist/
+*.egg-info/
+
+# OS and editor temporary files.
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
