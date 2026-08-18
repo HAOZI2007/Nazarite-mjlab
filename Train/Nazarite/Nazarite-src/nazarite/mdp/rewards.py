@@ -128,6 +128,44 @@ def safe_base_ang_vel(
   return _safe_tensor(result, limit=100.0)
 
 
+def safe_base_height(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """安全读取 base 高度, 异常时返回与 environment batch 匹配的零 tensor."""
+  try:
+    asset: Entity = env.scene[asset_cfg.name]
+    result = asset.data.root_link_pos_w[:, 2:3]
+  except (AttributeError, AssertionError, KeyError, RuntimeError, ValueError):
+    return torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
+  return _safe_tensor(result, limit=10.0)
+
+
+def base_height_reward(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  std: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """奖励 base 保持在目标高度附近, 防止 Go2 高速前进时过度下蹲."""
+  height = safe_base_height(env, asset_cfg).squeeze(-1)
+  target = target_height if math.isfinite(target_height) else 0.32
+  height_error = torch.square(height - target)
+  reward = torch.exp(-height_error / _safe_std(std) ** 2)
+  return _safe_tensor(reward, limit=1.0)
+
+
+def safe_foot_height(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+  """安全读取足端 foot height, 清理 NaN/Inf 并限制最大高度."""
+  from mjlab.tasks.velocity.mdp.observations import foot_height
+
+  try:
+    result = foot_height(env, sensor_name)
+  except (AssertionError, KeyError, RuntimeError, ValueError):
+    return torch.zeros((env.num_envs, 0), dtype=torch.float32, device=env.device)
+  return _safe_tensor(result, limit=1.0).clamp_min(0.0)
+
+
 def safe_foot_air_time(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
   """安全读取足端 foot air time, 将负值和 NaN/Inf 清理掉."""
   from mjlab.tasks.velocity.mdp.observations import foot_air_time
