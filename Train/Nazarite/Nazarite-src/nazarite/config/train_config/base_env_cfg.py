@@ -5,7 +5,6 @@ from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.command_manager import CommandTermCfg
-from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
@@ -15,11 +14,11 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.velocity import mdp
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 from nazarite.mdp import rewards as custom_rewards
+from nazarite.mdp.commands import GridAdaptiveVelocityCommandCfg
 
 
 # 基础强化学习训练环境配置.
@@ -132,20 +131,32 @@ def make_base_env_cfg() -> ManagerBasedRlEnvCfg:
   ##
 
   commands: dict[str, CommandTermCfg] = {
-    "twist": UniformVelocityCommandCfg(
+    "twist": GridAdaptiveVelocityCommandCfg(
       entity_name="robot",
-      resampling_time_range=(3.0, 8.0),
+      # 一个 episode 使用一个速度网格，便于把成功/失败归因到当前 cell。
+      resampling_time_range=(8.0, 12.0),
+      # 保留 10% 零速度站立任务；该任务不参与速度网格成功率统计。
       rel_standing_envs=0.1,
-      rel_heading_envs=0.3,
-      rel_forward_envs=0.2,
-      heading_command=True,
-      heading_control_stiffness=0.5,
+      rel_heading_envs=0.0,
+      rel_forward_envs=0.0,
+      heading_command=False,
+      grid_num_x=9,
+      grid_num_yaw=7,
+      # 初始 cell 覆盖接近零速度的区域；课程成功后向四周扩展。
+      initial_cell=(3, 3),
+      min_cell_visits=50,
+      success_window_size=100,
+      max_new_cells_per_update=4,
+      success_rate_threshold=0.8,
+      velocity_error_threshold=0.35,
+      yaw_error_threshold=0.35,
       debug_vis=True,
-      ranges=UniformVelocityCommandCfg.Ranges(
-        lin_vel_x=(-1.0, 1.0),
+      ranges=GridAdaptiveVelocityCommandCfg.Ranges(
+        # 这是课程最终覆盖范围，而不是每个 episode 的采样范围。
+        lin_vel_x=(-2.0, 3.0),
         lin_vel_y=(-1.0, 1.0),
-        ang_vel_z=(-0.5, 0.5),
-        heading=(-math.pi, math.pi),
+        ang_vel_z=(-0.7, 0.7),
+        heading=None,
       ),
     )
   }
@@ -297,7 +308,7 @@ def make_base_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "air_time": RewardTermCfg(
       func=custom_rewards.feet_air_time,
-      weight=1.5,
+      weight=2.0,
       params={
         "sensor_name": "feet_ground_contact",
         "threshold": 0.1,
@@ -325,7 +336,7 @@ def make_base_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "foot_slip": RewardTermCfg(
       func=custom_rewards.feet_slip,
-      weight=-0.1,
+      weight=-0.05,
       params={
         "sensor_name": "feet_ground_contact",
         "command_name": "twist",
@@ -369,19 +380,9 @@ def make_base_env_cfg() -> ManagerBasedRlEnvCfg:
   # Curriculum
   ##
 
-  curriculum = {
-    "command_vel": CurriculumTermCfg(
-      func=mdp.commands_vel,
-      params={
-        "command_name": "twist",
-        "velocity_stages": [
-          {"step": 0, "lin_vel_x": (-1.0, 1.0), "ang_vel_z": (-0.5, 0.5)},
-          {"step": 3000 * 24, "lin_vel_x": (-1.5, 2.0), "ang_vel_z": (-0.7, 0.7)},
-          {"step": 10000 * 24, "lin_vel_x": (-2.0, 3.0)},
-        ],
-      },
-    ),
-  }
+  # 速度课程已经由 GridAdaptiveVelocityCommand 管理。
+  # 不再同时启用固定时间阶段课程，避免两个课程系统同时修改速度范围。
+  curriculum = {}
 
   ##
   # Assemble and return

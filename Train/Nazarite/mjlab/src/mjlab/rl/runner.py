@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import torch
 from rsl_rl.env import VecEnv
@@ -70,7 +71,16 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     Extends the base implementation to persist the environment's
     common_step_counter and to respect the ``upload_model`` config flag.
     """
-    env_state = {"common_step_counter": self.env.unwrapped.common_step_counter}
+    env_state: dict[str, Any] = {
+      "common_step_counter": self.env.unwrapped.common_step_counter
+    }
+    command_manager = self.env.unwrapped.command_manager
+    for term_name in command_manager.active_terms:
+      command_term: Any = command_manager.get_term(term_name)
+      if hasattr(command_term, "curriculum_state_dict"):
+        env_state["grid_curriculum"] = command_term.curriculum_state_dict()
+        env_state["grid_curriculum_term"] = term_name
+        break
     infos = {**(infos or {}), "env_state": env_state}
     # Inline base OnPolicyRunner.save() to conditionally gate W&B upload.
     saved_dict = self.alg.save()
@@ -137,5 +147,15 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
 
     infos = loaded_dict["infos"]
     if infos and "env_state" in infos:
-      self.env.unwrapped.common_step_counter = infos["env_state"]["common_step_counter"]
+      env_state = infos["env_state"]
+      self.env.unwrapped.common_step_counter = env_state["common_step_counter"]
+      grid_state = env_state.get("grid_curriculum")
+      command_manager = self.env.unwrapped.command_manager
+      term_name = env_state.get("grid_curriculum_term")
+      if term_name in command_manager.active_terms:
+        command_term: Any = command_manager.get_term(term_name)
+        if grid_state is not None and hasattr(
+          command_term, "load_curriculum_state_dict"
+        ):
+          command_term.load_curriculum_state_dict(grid_state)
     return infos
