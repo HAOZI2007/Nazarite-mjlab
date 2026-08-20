@@ -1,10 +1,13 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/Train/Nazarite/mjlab/.venv/bin/python",
+  "python.defaultInterpreterPath": "/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/mjlab/.venv/bin/python",
   "python.analysis.extraPaths": [
-    "${workspaceFolder}/Train/Nazarite/mjlab/src",
-    "${workspaceFolder}/Train/Nazarite/mjlab/RSL-RL",
-    "${workspaceFolder}/Train/Nazarite/Nazarite-src"
+    "/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/mjlab/src",
+    "/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/mjlab/RSL-RL",
+    "/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/Nazarite-src"
   ],
-  "python.analysis.stubPath": "${workspaceFolder}/Train/Nazarite/mjlab/typings",
-  "python-envs.defaultEnvManager": "ms-python.python:system"
+  "python.analysis.stubPath": "/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/mjlab/typings",
+  "python.analysis.pythonVersion": "3.13",
+  "python.analysis.usePerProjectEnvironments": false,
+  "python.analysis.useLibraryCodeForTypes": true,
+  "python.terminal.activateEnvironment": true
 }
