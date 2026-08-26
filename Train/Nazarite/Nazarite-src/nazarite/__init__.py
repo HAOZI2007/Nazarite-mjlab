@@ -1,7 +1,7 @@
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 
-from .config.train_config.env_cfgs import (
+from .config.train_config.env_cfgs.go2_env_cfgs import (
   Nazarite_Velocity_Flat_Go2_No_WTW,
   Nazarite_Velocity_Flat_Go2_WTW,
 )

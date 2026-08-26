@@ -89,10 +89,9 @@ mjlab.__init__
                             └── mjlab.tasks.registry._REGISTRY
 ~~~
 
-当前 __init__.py 已经导入 config.env_cfgs 和 config.rl_cfg，但这两个文件还没有创建；当前实际目录是 config/robot_config 和 config/train_config。需要二选一：
-
-1. 在 config/ 下创建 env_cfgs.py、rl_cfg.py；
-2. 修改 __init__.py，让导入路径与 train_config 中的实际文件一致。
+当前任务入口从 `config.train_config.env_cfgs.go2_env_cfgs` 导入环境配置，从
+`config.train_config.rl_cfg` 导入训练配置；机器人本体配置位于
+`config.robot_config`。目录结构和导入路径应保持一致。
 
 完成配置后，还需要在 __init__.py 中调用 register_mjlab_task(...)，否则 entry point 虽然能被发现，但任务不会进入 registry。
 
@@ -107,7 +106,7 @@ mjlab.__init__
 - 碰撞、摩擦和关节限制；
 - action scale、关节顺序和控制频率。
 
-环境配置通过 get_robot_cfg() 等工厂函数使用它，不要把 XML 解析和奖励逻辑混在一起。
+环境配置通过 get_go2_cfg() 等工厂函数使用它，不要把 XML 解析和奖励逻辑混在一起。
 
 ### 3.3 config/train_config
 

@@ -104,7 +104,7 @@ GO2_INIT_STATE = EntityCfg.InitialStateCfg(
     },
 )
 
-def get_robot_cfg() -> EntityCfg:
+def get_go2_cfg() -> EntityCfg:
     return EntityCfg(
         init_state=GO2_INIT_STATE,
         collisions=(),

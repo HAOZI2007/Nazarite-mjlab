@@ -20,7 +20,7 @@ from nazarite.config.robot_config.go2_cfg import (
   GO2_FOOT_GEOMS,
   GO2_FOOT_SITES,
   GO2_THIGH_BODIES,
-  get_robot_cfg,
+  get_go2_cfg,
 )
 from nazarite.config.train_config.base_env_cfg import make_base_env_cfg
 from nazarite.mdp import rewards as custom_rewards
@@ -49,7 +49,7 @@ def Nazarite_Velocity_Flat_Go2(
 
   # The base configuration is intentionally robot-agnostic. Bind Go2 here,
   # where the concrete trainable task is created.
-  cfg.scene.entities = {"robot": get_robot_cfg()}
+  cfg.scene.entities = {"robot": get_go2_cfg()}
 
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
