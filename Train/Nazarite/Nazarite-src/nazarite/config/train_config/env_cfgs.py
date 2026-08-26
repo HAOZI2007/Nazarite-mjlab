@@ -28,9 +28,16 @@ from nazarite.mdp import rewards as custom_rewards
 
 def Nazarite_Velocity_Flat_Go2(
   play: bool = False,
+  enable_wtw: bool = False,
 ) -> ManagerBasedRlEnvCfg:
-  """Create the trainable Nazarite Go2 flat-ground velocity task."""
-  cfg = make_base_env_cfg()
+  """Create the Nazarite Go2 flat-ground Grid Adaptive velocity task.
+
+  默认返回不带 WTW 的 baseline；WTW 对照任务通过显式设置
+  ``enable_wtw=True`` 创建。
+  """
+  cfg = make_base_env_cfg(
+    enable_wtw=enable_wtw,
+  )
 
   # ==========================================
   # 修改智能体（并行环境）数量
@@ -137,8 +144,9 @@ def Nazarite_Velocity_Flat_Go2(
   ##
   # Rewards
   ##
-  cfg.rewards["track_linear_velocity"].weight = 2.5
-  cfg.rewards["track_angular_velocity"].weight = 2.0
+  if not enable_wtw:
+    cfg.rewards["track_linear_velocity"].weight = 2.5
+    cfg.rewards["track_angular_velocity"].weight = 2.0
 
   cfg.rewards["upright"].params["asset_cfg"].body_names = (GO2_BASE_BODY,)
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = (GO2_BASE_BODY,)
@@ -152,7 +160,22 @@ def Nazarite_Velocity_Flat_Go2(
       "asset_cfg": SceneEntityCfg("robot"),
     },
   )
-  cfg.rewards["pose"].weight = 1.0
+  if enable_wtw:
+    # WTW 任务中不再使用 baseline 的固定 base_height 奖励。
+    cfg.rewards.pop("base_height")
+    # 独立奖励中的 stance width 和 Raibert 项都需要四个足端 site。
+    cfg.rewards["wtw_stance_width"].params[
+      "asset_cfg"
+    ].site_names = GO2_FOOT_SITES
+    cfg.rewards["wtw_raibert_foot_position"].params[
+      "asset_cfg"
+    ].site_names = GO2_FOOT_SITES
+    # 速度任务也作为独立项交给 RewardManager 累加。
+    cfg.rewards["track_linear_velocity"].weight = 2.0
+    cfg.rewards["track_angular_velocity"].weight = 2.0
+  # 官方 WTW 训练没有正向 default-pose 奖励；该项会把腿锁在默认
+  # 姿态附近，和摆动/支撑行为目标竞争，容易形成高速小碎步。
+  cfg.rewards["pose"].weight = 0.0 if enable_wtw else 1.0
   cfg.rewards["pose"].params["std_standing"] = {
     r".*(FR|FL|RR|RL)_(hip|thigh)_joint.*": 0.2,
     r".*(FR|FL|RR|RL)_calf_joint.*": 0.3,
@@ -162,8 +185,8 @@ def Nazarite_Velocity_Flat_Go2(
     r".*(FR|FL|RR|RL)_calf_joint.*": 0.8,
   }
   cfg.rewards["pose"].params["std_running"] = {
-    r".*(FR|FL|RR|RL)_(hip|thigh)_joint.*": 1.8,
-    r".*(FR|FL|RR|RL)_calf_joint.*": 2.5,
+    r".*(FR|FL|RR|RL)_(hip|thigh)_joint.*": 0.8,
+    r".*(FR|FL|RR|RL)_calf_joint.*": 1.5,
   }
   # Match mjlab's flat Go2 penalty magnitudes. The previous joint acceleration
   # and joint-limit weights were too large for the old high-gain actuators and
@@ -171,7 +194,8 @@ def Nazarite_Velocity_Flat_Go2(
   cfg.rewards["dof_pos_limits"].weight = -0.2
   cfg.rewards["joint_acc_l2"].weight = -2.5e-7
   cfg.rewards["action_rate_l2"].weight = -0.005
-  cfg.rewards["air_time"].weight = 0.15
+  if not enable_wtw:
+    cfg.rewards["air_time"].weight = 0.15
   cfg.rewards["soft_landing"].weight = -1.0e-5
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = GO2_FOOT_SITES
   cfg.rewards["foot_slip"].weight = -0.05
@@ -206,7 +230,31 @@ def Nazarite_Velocity_Flat_Go2(
     cfg.scene.num_envs = 1
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False
-    cfg.events.pop("push_robot", None)
+    # WTW 的 play 保留与训练一致的随机推力，便于直接检查抗扰动能力。
+    # baseline 的 play 仍关闭推力，保持原有的纯动作观察方式。
+    if not enable_wtw:
+      cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
 
   return cfg
+
+
+def Nazarite_Velocity_Flat_Go2_WTW(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Create the Grid Adaptive + official-style independent WTW task.
+
+  使用 Grid Adaptive 和 WTW 行为命令；速度任务、摆动相、支撑相及其他
+  行为项拆成独立 reward term，便于在 TensorBoard 中分别观察各项贡献。
+  """
+  return Nazarite_Velocity_Flat_Go2(
+    play=play,
+    enable_wtw=True,
+  )
+
+
+def Nazarite_Velocity_Flat_Go2_No_WTW(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Create the Grid Adaptive Go2 baseline without WTW."""
+  return Nazarite_Velocity_Flat_Go2(play=play, enable_wtw=False)
