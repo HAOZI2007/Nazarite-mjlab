@@ -128,6 +128,72 @@ def safe_base_ang_vel(
   return _safe_tensor(result, limit=100.0)
 
 
+def zero_command_stillness(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  command_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  linear_velocity_weight: float = 1.0,
+  angular_velocity_weight: float = 1.0,
+  joint_velocity_weight: float = 0.05,
+) -> torch.Tensor:
+  """在零速度指令下惩罚机体和关节的非必要运动.
+
+  该函数返回正的 cost, 配置时应使用负的 reward weight。只有当
+  ``command_name`` 对应的 [vx, vy, wz] 都接近零时才启用惩罚，因此不会
+  把正常行走所需的机体摆动和关节运动误判为错误。
+
+  ``asset_cfg`` 同时用于选择 base 和参与计算的关节。Go2 配置中传入
+  ``joint_names=(".*",)``，即可覆盖全部关节。
+  """
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+
+  asset: Entity = env.scene[asset_cfg.name]
+  standing_mask = 1.0 - _command_is_active(command, command_threshold)
+
+  # 使用机体坐标系速度，和 actor/critic 观测中的本体感知定义保持一致。
+  base_lin_vel = safe_base_lin_vel(env, asset_cfg)
+  base_ang_vel = safe_base_ang_vel(env, asset_cfg)
+  joint_vel = _safe_tensor(
+    asset.data.joint_vel[:, asset_cfg.joint_ids],
+    limit=_SAFE_STATE_LIMIT,
+  )
+
+  lin_cost = torch.sum(torch.square(base_lin_vel), dim=1)
+  ang_cost = torch.sum(torch.square(base_ang_vel), dim=1)
+  joint_cost = torch.sum(torch.square(joint_vel), dim=1)
+  cost = standing_mask * (
+    max(float(linear_velocity_weight), 0.0) * lin_cost
+    + max(float(angular_velocity_weight), 0.0) * ang_cost
+    + max(float(joint_velocity_weight), 0.0) * joint_cost
+  )
+  cost = _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
+
+  # 只统计零速度环境，避免行走环境的高速运动污染静止诊断曲线。
+  standing_count = torch.clamp(torch.sum(standing_mask), min=1.0)
+  if hasattr(env, "extras") and "log" in env.extras:
+    env.extras["log"]["WTW/stand_base_lin_vel"] = _safe_tensor(
+      torch.sum(lin_cost * standing_mask) / standing_count,
+      limit=_SAFE_REWARD_LIMIT,
+    )
+    env.extras["log"]["WTW/stand_base_ang_vel"] = _safe_tensor(
+      torch.sum(ang_cost * standing_mask) / standing_count,
+      limit=_SAFE_REWARD_LIMIT,
+    )
+    env.extras["log"]["WTW/stand_joint_vel"] = _safe_tensor(
+      torch.sum(joint_cost * standing_mask) / standing_count,
+      limit=_SAFE_REWARD_LIMIT,
+    )
+    env.extras["log"]["WTW/stand_still_cost"] = _safe_tensor(
+      torch.sum(cost) / standing_count,
+      limit=_SAFE_REWARD_LIMIT,
+    )
+
+  return cost
+
+
 def safe_base_height(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
