@@ -1,4 +1,5 @@
 import math
+from copy import deepcopy
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
@@ -71,7 +72,8 @@ def make_base_env_cfg(
       func=mdp.generated_commands,
       params={"command_name": "behavior"},
     ),
-    # 论文中的四足正弦 timing reference，顺序为 [FL, FR, RL, RR]。
+    # 四足 sin/cos timing reference，顺序为 [FL, FR, RL, RR]。
+    # 该 term 下面会显式设置 history_length=0，只输入当前 phase。
     "phase": ObservationTermCfg(
       func=custom_wtw.wtw_phase_reference,
       params={"command_name": "behavior"},
@@ -83,8 +85,17 @@ def make_base_env_cfg(
     actor_terms.pop("behavior")
     actor_terms.pop("phase")
 
-  critic_terms = {
-    **actor_terms,
+  if enable_wtw:
+    # 取消组级 history_length 后，才能为不同 observation term 设置不同历史。
+    # actor 的普通观测保留 10 帧；behavior 只保留 5 帧；phase 使用当前帧。
+    for term in actor_terms.values():
+      term.history_length = 10
+    actor_terms["behavior"].history_length = 5
+    actor_terms["phase"].history_length = 0
+
+  # 深拷贝，避免后面给 critic 设置 3 帧历史时修改 actor 的配置对象。
+  critic_terms = deepcopy(actor_terms)
+  critic_terms.update({
     # Critic sees the true (unbiased) joint positions as privileged information.
     "joint_pos": ObservationTermCfg(func=mdp.joint_pos_rel),
     # Critic receives privileged body linear velocity, matching mjlab's
@@ -112,23 +123,31 @@ def make_base_env_cfg(
       func=custom_rewards.safe_foot_contact_forces,
       params={"sensor_name": "feet_ground_contact"},
     ),
-  }
+  })
+
+  if enable_wtw:
+    # critic 的普通和特权观测使用 3 帧；behavior 仍保留 5 帧；phase 不堆叠。
+    # 这一步放在 update() 之后，确保新加入的特权项也不会意外变成 0 帧。
+    for term in critic_terms.values():
+      term.history_length = 3
+    critic_terms["behavior"].history_length = 5
+    critic_terms["phase"].history_length = 0
 
   observations = {
     "actor": ObservationGroupCfg(
       terms=actor_terms,
       concatenate_terms=True,
       enable_corruption=True,
-      # WTW 需要从时间上下文中判断接触相位和身体响应，使用 10 帧历史。
-      history_length=10 if enable_wtw else None,
+      # 使用各个 term 自己的 history_length；组级设置不能覆盖 phase=0、behavior=5。
+      history_length=None,
       flatten_history_dim=True,
     ),
     "critic": ObservationGroupCfg(
       terms=critic_terms,
       concatenate_terms=True,
       enable_corruption=False,
-      # Critic 使用较短的特权历史，降低输入维度，同时保留扰动响应信息。
-      history_length=3 if enable_wtw else None,
+      # 使用逐项历史配置：普通项为 3，behavior 为 5，phase 为 0。
+      history_length=None,
       flatten_history_dim=True,
     ),
   }

@@ -274,8 +274,22 @@ def wtw_phase_reference(
     env: ManagerBasedRlEnv,
     command_name: str,
 ) -> Tensor:
-    """返回论文使用的四足正弦 timing reference，形状为 [N, 4]。"""
+    """返回四条腿的 sin/cos timing reference，形状为 [N, 8]。
+
+    sin 和 cos 共同表示一个完整周期，避免仅使用 sin 时不同 phase
+    位置可能得到相同观测值的问题。输出顺序为：
+
+      [sin_FL, sin_FR, sin_RL, sin_RR,
+       cos_FL, cos_FR, cos_RL, cos_RR]
+    """
     term = env.command_manager.get_term(command_name)
     if not isinstance(term, WTWBehaviorCommand):
         raise TypeError(f"{command_name} is not a WTWBehaviorCommand.")
-    return torch.sin(2.0 * math.pi * term.phase)
+    phase_angle = 2.0 * math.pi * term.phase
+    return torch.cat(
+        (
+            torch.sin(phase_angle),
+            torch.cos(phase_angle),
+        ),
+        dim=-1,
+    )
