@@ -203,10 +203,13 @@ self._base_phase = torch.where(
 behavior 是静态参数，phase 是时间参考。当前 phase observation 返回：
 
 ~~~python
-torch.sin(2.0 * math.pi * term.phase)
+phase_angle = 2.0 * math.pi * term.phase
+torch.cat((torch.sin(phase_angle), torch.cos(phase_angle)), dim=-1)
 ~~~
 
-形状为 [N,4]，顺序是 [FL,FR,RL,RR]。正弦编码避免 phase 从 1 回到 0 时输入跳变。
+形状为 [N,8]，顺序是 [sin_FL, sin_FR, sin_RL, sin_RR,
+cos_FL, cos_FR, cos_RL, cos_RR]。正弦和余弦共同表示完整周期位置，且
+phase 从 1 回到 0 时输入连续。
 
 base_env_cfg.py 中：
 
@@ -239,14 +242,20 @@ foot_contact、foot_contact_forces
 
 这是 asymmetric actor-critic。critic 的 privileged 量只帮助训练，不能误放入 actor，否则实机没有这些量时会失配。
 
-当前历史：
+当前历史采用逐项配置：
 
-~~~python
-actor history_length = 10
-critic history_length = 3
+~~~text
+actor 普通观测：10 帧
+actor behavior：5 帧
+actor phase sin/cos：0 帧，只保留当前帧
+
+critic 普通和特权观测：3 帧
+critic behavior：5 帧
+critic phase sin/cos：0 帧，只保留当前帧
 ~~~
 
-历史由 ObservationGroupCfg 统一堆叠，不要在每个 observation term 内重复堆叠。
+当前两个 ObservationGroupCfg 的 history_length 都是 None，避免组级设置覆盖
+behavior=5 和 phase=0。历史由各个 observation term 独立管理。
 
 ## 10. 期望接触相位
 
@@ -589,4 +598,3 @@ phase 提供时间结构
 独立 RewardTerm 约束行为
 本体观测保证部署可行
 ~~~
-

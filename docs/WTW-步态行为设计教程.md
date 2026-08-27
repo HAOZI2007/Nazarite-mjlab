@@ -656,25 +656,25 @@ duty_factor = 支撑时间 / 一个完整周期
 
 ## 14. 相位边界、平滑和历史
 
-phase 从 1 回到 0 是周期边界。当前使用 sin phase reference：
+phase 从 1 回到 0 是周期边界。当前使用 sin/cos phase reference：
 
 ~~~python
-sin(2 * pi * phase)
+[sin(2 * pi * phase), cos(2 * pi * phase)]
 ~~~
 
-它比直接输入 phase 更连续，但单个 sin 值不是完全可逆的。当前 actor 10 帧历史有两个作用：
-
-1. 让策略看到 phase 的变化方向；
-2. 让策略结合关节运动判断当前是在抬脚还是落脚。
-
-如果把 phase 改成直接的四个标量、去掉历史，策略可能更难判断周期位置。若以后扩展，可以考虑同时输入：
+sin 和 cos 共同表示完整周期位置，比单个 sin 更不容易产生 phase 歧义。
+当前 actor 的历史配置是：
 
 ~~~text
-sin(2πphase)
-cos(2πphase)
+普通本体观测：10 帧
+behavior：5 帧
+phase sin/cos：0 帧
 ~~~
 
-但这会改变 actor 输入维度和 checkpoint 兼容性，应作为新实验处理。
+phase 不堆叠历史是有意设计：sin/cos 当前帧已经包含完整周期位置，避免
+重复输入 10 个相同结构的 phase 历史。behavior 保留 5 帧，则可以帮助策略
+识别行为参数是否刚刚发生平滑切换。新增 cos、改变 phase 历史和修改 behavior
+历史都会改变 actor 输入维度，旧 checkpoint 不能直接加载，必须重新训练。
 
 ## 15. phase 初始化和 resampling 的注意事项
 
@@ -968,4 +968,3 @@ policy 学习如何用关节动作完成这一切
 再加入身体行为参数
 最后用奖励训练策略遵循它
 ~~~
-
