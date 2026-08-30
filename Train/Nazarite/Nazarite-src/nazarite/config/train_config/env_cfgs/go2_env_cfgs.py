@@ -19,6 +19,7 @@ from nazarite.config.robot_config.go2_cfg import (
   GO2_CALF_BODIES,
   GO2_FOOT_GEOMS,
   GO2_FOOT_SITES,
+  GO2_HIP_BODIES,
   GO2_THIGH_BODIES,
   get_go2_cfg,
 )
@@ -99,6 +100,20 @@ def Nazarite_Velocity_Flat_Go2(
     num_slots=1,
     history_length=4,
   )
+  hip_ground_cfg = ContactSensorCfg(
+    name="hip_ground_touch",
+    primary=ContactMatch(
+      mode="body",
+      pattern=GO2_HIP_BODIES,
+      entity="robot",
+    ),
+    secondary=terrain_match,
+    fields=("found", "force"),
+    reduce="none",
+    num_slots=1,
+    # 保留最近几个仿真子步，避免一次短暂接触被数值噪声过滤掉。
+    history_length=4,
+  )
   shank_ground_cfg = ContactSensorCfg(
     name="shank_ground_touch",
     primary=ContactMatch(
@@ -129,6 +144,7 @@ def Nazarite_Velocity_Flat_Go2(
   cfg.scene.sensors = (
     foot_height_cfg,
     feet_ground_cfg,
+    hip_ground_cfg,
     thigh_ground_cfg,
     shank_ground_cfg,
     trunk_ground_cfg,
@@ -163,10 +179,8 @@ def Nazarite_Velocity_Flat_Go2(
   if enable_wtw:
     # WTW 任务中不再使用 baseline 的固定 base_height 奖励。
     cfg.rewards.pop("base_height")
-    # 独立奖励中的 stance width 和 Raibert 项都需要四个足端 site。
-    cfg.rewards["wtw_stance_width"].params[
-      "asset_cfg"
-    ].site_names = GO2_FOOT_SITES
+    # 官方式 Raibert 项需要四个足端 site。站姿宽度已经由该项的目标落点
+    # 直接约束，因此不再额外保留旧的 wtw_stance_width 奖励。
     cfg.rewards["wtw_raibert_foot_position"].params[
       "asset_cfg"
     ].site_names = GO2_FOOT_SITES
@@ -214,14 +228,34 @@ def Nazarite_Velocity_Flat_Go2(
     func=mdp.bad_orientation,
     params={"limit_angle": math.radians(70.0)},
   )
-  # Keep trunk_ground_touch as a diagnostic sensor, but do not terminate on
-  # brief trunk contacts caused by pushes. Match mjlab's fall criterion by
-  # terminating when a thigh contacts the terrain.
-  cfg.terminations.pop("trunk_ground_touch", None)
+  # 大腿触地通常意味着腿部已经严重折叠，保留原有的大腿终止条件。
   cfg.terminations["illegal_contact"] = TerminationTermCfg(
     func=mdp.illegal_contact,
-    params={"sensor_name": "thigh_ground_touch"},
+    params={
+      "sensor_name": "thigh_ground_touch",
+      "force_threshold": 10.0,
+    },
   )
+  if enable_wtw:
+    # 髋部触地说明机体已经严重下沉或翻倒；单独设置较低阈值，
+    # 让 WTW 策略尽快结束异常 episode，避免继续收集错误姿态样本。
+    # baseline 保留原有终止条件，方便进行公平的 A/B 对照。
+    cfg.terminations["hip_illegal_contact"] = TerminationTermCfg(
+      func=mdp.illegal_contact,
+      params={
+        "sensor_name": "hip_ground_touch",
+        "force_threshold": 5.0,
+      },
+    )
+    # 躯干触地说明机器人已经失去正常支撑，直接终止当前 episode，
+    # 避免策略在躯干贴地状态下继续优化速度奖励。
+    cfg.terminations["trunk_illegal_contact"] = TerminationTermCfg(
+      func=mdp.illegal_contact,
+      params={
+        "sensor_name": "trunk_ground_touch",
+        "force_threshold": 5.0,
+      },
+    )
 
   ##
   # Play
@@ -230,11 +264,17 @@ def Nazarite_Velocity_Flat_Go2(
     cfg.scene.num_envs = 1
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False
-    # WTW 的 play 保留与训练一致的随机推力，便于直接检查抗扰动能力。
+    # WTW 的 play 保留随机推力，便于直接检查抗扰动能力；训练阶段的
+    # push_robot 会在下面关闭，使策略先学习稳定的四腿同步步态。
     # baseline 的 play 仍关闭推力，保持原有的纯动作观察方式。
     if not enable_wtw:
       cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
+  elif enable_wtw:
+    # 官方 WTW 的训练脚本关闭随机推力。Pronking 需要先学会四腿同步
+    # 支撑/腾空，若训练初期加入推力，策略容易退化为更稳的对角支撑。
+    # 只在训练阶段移除该事件，play 阶段仍保留上面的随机推力测试。
+    cfg.events.pop("push_robot", None)
 
   return cfg
 

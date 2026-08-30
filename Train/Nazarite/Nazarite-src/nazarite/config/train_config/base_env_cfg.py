@@ -25,6 +25,209 @@ from nazarite.mdp.commands import GridAdaptiveVelocityCommandCfg
 from nazarite.mdp.wtw import WTWBehaviorCommandCfg
 
 
+def _make_wtw_velocity_command() -> GridAdaptiveVelocityCommandCfg:
+  """创建当前 Trot 课程使用的最终 Grid 配置。"""
+  return GridAdaptiveVelocityCommandCfg(
+    entity_name="robot",
+    resampling_time_range=(10.0, 10.0),
+    rel_standing_envs=0.0,
+    rel_heading_envs=0.0,
+    rel_forward_envs=0.0,
+    heading_command=False,
+    # 当前阶段同时覆盖倒退、低速和前进；strict frontier 保证逐格验证。
+    grid_num_x=3,
+    grid_num_yaw=1,
+    initial_cell=(1, 0),
+    min_cell_visits=8192,
+    success_window_size=8192,
+    max_new_cells_per_update=1,
+    require_all_active_cells_ready=True,
+    success_rate_threshold=0.8,
+    velocity_error_threshold=0.25,
+    yaw_error_threshold=0.10,
+    gait_quality_behavior_command_name="behavior",
+    gait_quality_sensor_name="feet_ground_contact",
+    gait_schedule_error_threshold=0.16,
+    gait_sync_error_threshold=0.08,
+    gait_mixed_contact_threshold=0.12,
+    gait_contact_smoothing=0.07,
+    debug_vis=True,
+    ranges=GridAdaptiveVelocityCommandCfg.Ranges(
+      lin_vel_x=(-1.0, 1.0),
+      lin_vel_y=(0.0, 0.0),
+      ang_vel_z=(0.0, 0.0),
+      heading=None,
+    ),
+  )
+
+
+def _make_wtw_behavior_command() -> WTWBehaviorCommandCfg:
+  """创建当前 Trot 课程的行为命令。"""
+  return WTWBehaviorCommandCfg(
+    entity_name="robot",
+    resampling_time_range=(30.0, 30.0),
+    # 在已验证的 2.0 Hz Trot 基础上只开放小范围，先学习速度变化下的
+    # 步频适配，避免直接引入过宽的行为分布而破坏已收敛的接触时序。
+    frequency_range=(2.0, 3.0),
+    # body_height 是相对 0.32 m 基础高度的偏移；0.0 即目标 0.32 m。
+    body_height_range=(0.0, 0.0),
+    body_pitch_range=(0.0, 0.0),
+    stance_width_range=(0.25, 0.25),
+    foot_swing_height_range=(0.06, 0.06),
+    duty_factor=0.5,
+    gait_names=("trot",),
+    # reset 从支撑相开始，避免随机初相位与初始站姿冲突。
+    randomize_initial_phase=False,
+    debug_vis=False,
+  )
+
+
+def _configure_wtw_observation_history(
+  actor_terms: dict[str, ObservationTermCfg],
+  critic_terms: dict[str, ObservationTermCfg],
+) -> None:
+  """设置 WTW 的异构历史长度。"""
+  # actor 的普通本体状态保留较长运动上下文；critic 使用较短特权历史。
+  for term in actor_terms.values():
+    term.history_length = 10
+  for term in critic_terms.values():
+    term.history_length = 3
+
+  # behavior 变化较慢，两个网络均保留 5 帧；sin/cos phase 只需当前帧。
+  actor_terms["behavior"].history_length = 5
+  actor_terms["phase"].history_length = 0
+  critic_terms["behavior"].history_length = 5
+  critic_terms["phase"].history_length = 0
+
+
+def _make_wtw_rewards() -> dict[str, RewardTermCfg]:
+  """返回当前 WTW 任务启用的 phase-conditioned 奖励。
+
+  不在这里保留 ``air_time``、``stance_contact`` 等 baseline gait 奖励：
+  它们不读取 phase，和摆动/支撑时序会产生相反的优化信号。
+  """
+  behavior_params = {
+    "behavior_command_name": "behavior",
+    "command_name": "twist",
+    "command_threshold": 0.05,
+  }
+  return {
+    # 当前速度 Grid 不采样站立；保留该项，供未来显式站立课程启用。
+    "zero_command_stillness": RewardTermCfg(
+      func=custom_rewards.zero_command_stillness,
+      weight=0.0,
+      params={
+        "command_name": "twist",
+        "command_threshold": 0.05,
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+        "linear_velocity_weight": 1.0,
+        "angular_velocity_weight": 1.0,
+        "joint_velocity_weight": 0.05,
+      },
+    ),
+    # 官方 WTW 的逐脚动力学约束：摆动相少受力，支撑相少滑动。
+    "wtw_swing_phase_force": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_swing_phase_contact_cost,
+      weight=-4.0,
+      params={
+        "sensor_name": "feet_ground_contact",
+        **behavior_params,
+        "smoothing": 0.07,
+        "force_std": 100.0,
+      },
+    ),
+    "wtw_stance_phase_velocity": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_stance_phase_velocity_cost,
+      weight=-4.0,
+      params={
+        "sensor_name": "feet_ground_contact",
+        **behavior_params,
+        "smoothing": 0.07,
+        "velocity_std": 10.0,
+      },
+    ),
+    # 前者比较每条腿的期望接触，后者只在同步 gait 的高置信相位惩罚混合接触。
+    "wtw_contact_schedule": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_contact_schedule_cost,
+      weight=-1.5,
+      params={
+        "sensor_name": "feet_ground_contact",
+        **behavior_params,
+        "smoothing": 0.07,
+      },
+    ),
+    "wtw_group_contact_consistency": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_group_contact_consistency_cost,
+      weight=-0.5,
+      params={
+        "sensor_name": "feet_ground_contact",
+        **behavior_params,
+        "smoothing": 0.07,
+        "confidence_threshold": 0.9,
+      },
+    ),
+    "wtw_shank_contact": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_shank_contact_cost,
+      weight=-0.1,
+      params={
+        "sensor_name": "shank_ground_touch",
+        "command_name": "twist",
+        "command_threshold": 0.05,
+        "force_threshold": 5.0,
+        "force_scale": 20.0,
+      },
+    ),
+    # 行为风格项：高度和 pitch；当前 body_height=0 表示目标高度 0.32 m。
+    "wtw_body_height": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_body_height,
+      weight=40.0,
+      params={
+        "behavior_command_name": "behavior",
+        "asset_cfg": SceneEntityCfg("robot"),
+        "base_height_target": 0.32,
+      },
+    ),
+    "wtw_body_pitch": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_body_pitch,
+      weight=0.10,
+      params={
+        "behavior_command_name": "behavior",
+        "asset_cfg": SceneEntityCfg("robot"),
+        "std": 0.08,
+        "command_name": "twist",
+        "command_threshold": 0.05,
+      },
+    ),
+    # 连续摆腿高度和全身 Raibert 落点共同约束腾空轨迹和落脚位置。
+    "wtw_foot_clearance": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_foot_clearance_cmd_linear_cost,
+      weight=-30.0,
+      params={
+        "height_sensor_name": "foot_height_scan",
+        **behavior_params,
+        "smoothing": 0.07,
+        "foot_radius": 0.02,
+      },
+    ),
+    "wtw_raibert_foot_position": RewardTermCfg(
+      func=custom_wtw_rewards.wtw_raibert_foot_position,
+      weight=-10.0,
+      params={
+        "asset_cfg": SceneEntityCfg("robot", site_names=()),
+        **behavior_params,
+        "stance_length": 0.45,
+      },
+    ),
+  }
+
+
+def _configure_wtw_rewards(rewards: dict[str, RewardTermCfg]) -> None:
+  """将通用奖励转换为 WTW 的 phase-conditioned 奖励组合。"""
+  for reward_name in ("air_time", "prolonged_air_time", "stance_contact"):
+    rewards.pop(reward_name)
+  rewards.update(_make_wtw_rewards())
+
+
 # 基础强化学习训练环境配置.
 def make_base_env_cfg(
   enable_wtw: bool = False,
@@ -85,14 +288,6 @@ def make_base_env_cfg(
     actor_terms.pop("behavior")
     actor_terms.pop("phase")
 
-  if enable_wtw:
-    # 取消组级 history_length 后，才能为不同 observation term 设置不同历史。
-    # actor 的普通观测保留 10 帧；behavior 只保留 5 帧；phase 使用当前帧。
-    for term in actor_terms.values():
-      term.history_length = 10
-    actor_terms["behavior"].history_length = 5
-    actor_terms["phase"].history_length = 0
-
   # 深拷贝，避免后面给 critic 设置 3 帧历史时修改 actor 的配置对象。
   critic_terms = deepcopy(actor_terms)
   critic_terms.update({
@@ -126,12 +321,7 @@ def make_base_env_cfg(
   })
 
   if enable_wtw:
-    # critic 的普通和特权观测使用 3 帧；behavior 仍保留 5 帧；phase 不堆叠。
-    # 这一步放在 update() 之后，确保新加入的特权项也不会意外变成 0 帧。
-    for term in critic_terms.values():
-      term.history_length = 3
-    critic_terms["behavior"].history_length = 5
-    critic_terms["phase"].history_length = 0
+    _configure_wtw_observation_history(actor_terms, critic_terms)
 
   observations = {
     "actor": ObservationGroupCfg(
@@ -202,30 +392,18 @@ def make_base_env_cfg(
       debug_vis=True,
       ranges=GridAdaptiveVelocityCommandCfg.Ranges(
         # 这是课程最终覆盖范围，而不是每个 episode 的采样范围。
-        lin_vel_x=(-2.0, 2.0),
-        lin_vel_y=(-1.0, 1.0),
-        ang_vel_z=(-0.7, 0.7),
+        lin_vel_x=(-1.0, 1.0),
+        lin_vel_y=(0.0, 0.0),
+        ang_vel_z=(-0.5, 0.5),
         heading=None,
       ),
     ),
-    # WTW 行为在一个 episode 内保持，避免步态和速度同时频繁跳变。
-    "behavior": WTWBehaviorCommandCfg(
-      entity_name="robot",
-      resampling_time_range=(30.0, 30.0),
-      frequency_range=(2.0, 2.0),
-      body_height_range=(0.32, 0.32),
-      body_pitch_range=(0.0, 0.0),
-      stance_width_range=(0.21, 0.21),
-      foot_swing_height_range=(0.07, 0.07),
-      # 第一阶段先固定 trot，待速度追踪和接触时序稳定后再开放其他步态。
-      gait_names=("trot",),
-      debug_vis=False,
-    ),
   }
 
-  if not enable_wtw:
-    # 两个任务都保留 twist，因此 Grid Adaptive 的采样和课程逻辑完全一致。
-    commands.pop("behavior")
+  if enable_wtw:
+    # WTW 使用自身的最终 Grid 和 behavior，不依赖随后分散的原地覆盖。
+    commands["twist"] = _make_wtw_velocity_command()
+    commands["behavior"] = _make_wtw_behavior_command()
 
   ##
   # Events
@@ -428,137 +606,10 @@ def make_base_env_cfg(
         "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
       },
     ),
-    # WTW 的零速度站立约束：同时抑制机体线速度、角速度和关节速度。
-    # 函数返回正的 cost，因此这里使用负权重；行走指令下该项自动为 0。
-    "zero_command_stillness": RewardTermCfg(
-      func=custom_rewards.zero_command_stillness,
-      weight=0.0,
-      params={
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
-        "linear_velocity_weight": 1.0,
-        "angular_velocity_weight": 1.0,
-        "joint_velocity_weight": 0.05,
-      },
-    ),
-    # 官方式独立奖励：摆动相要求足端接触力尽可能小。
-    # 函数返回正的代价，因此使用负权重。
-    "wtw_swing_phase_force": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_swing_phase_contact_cost,
-      weight=-4.0,
-      params={
-        "sensor_name": "feet_ground_contact",
-        "behavior_command_name": "behavior",
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "smoothing": 0.15,
-        "force_std": 100.0,
-      },
-    ),
-    # 官方式独立奖励：支撑相要求足端水平速度尽可能小。
-    "wtw_stance_phase_velocity": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_stance_phase_velocity_cost,
-      weight=-4.0,
-      params={
-        "sensor_name": "feet_ground_contact",
-        "behavior_command_name": "behavior",
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "smoothing": 0.15,
-        "velocity_std": 10.0,
-      },
-    ),
-    "wtw_body_height": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_body_height,
-      weight=0.10,
-      params={
-        "behavior_command_name": "behavior",
-        "asset_cfg": SceneEntityCfg("robot"),
-        "std": 0.035,
-      },
-    ),
-    "wtw_body_pitch": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_body_pitch,
-      weight=0.03,
-      params={
-        "behavior_command_name": "behavior",
-        "asset_cfg": SceneEntityCfg("robot"),
-        "std": 0.08,
-        "command_name": "twist",
-        "command_threshold": 0.05,
-      },
-    ),
-    "wtw_stance_width": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_stance_width,
-      weight=0.03,
-      params={
-        "asset_cfg": SceneEntityCfg("robot", site_names=()),
-        "behavior_command_name": "behavior",
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "std": 0.035,
-      },
-    ),
-    "wtw_foot_swing_height": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_foot_swing_height,
-      weight=0.10,
-      params={
-        "sensor_name": "feet_ground_contact",
-        "height_sensor_name": "foot_height_scan",
-        "behavior_command_name": "behavior",
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "std": 0.04,
-        "smoothing": 0.15,
-      },
-    ),
-    "wtw_raibert_foot_position": RewardTermCfg(
-      func=custom_wtw_rewards.wtw_raibert_foot_position,
-      # Raibert 项只做小幅辅助，避免压过速度追踪和接触时序。
-      weight=0.03,
-      params={
-        "asset_cfg": SceneEntityCfg("robot", site_names=()),
-        "behavior_command_name": "behavior",
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "std": 0.08,
-        "smoothing": 0.15,
-      },
-    ),
   }
 
-  if not enable_wtw:
-    # baseline 不使用任何 WTW 行为辅助奖励，避免对照实验混入隐性行为约束。
-    for reward_name in (
-      "zero_command_stillness",
-      "wtw_swing_phase_force",
-      "wtw_stance_phase_velocity",
-      "wtw_body_height",
-      "wtw_body_pitch",
-      "wtw_stance_width",
-      "wtw_foot_swing_height",
-      "wtw_raibert_foot_position",
-    ):
-      rewards.pop(reward_name)
-
-  else:
-    # 这些奖励没有使用 WTW phase，容易与行为参数给出的摆动/支撑节奏竞争。
-    for reward_name in ("air_time", "prolonged_air_time", "stance_contact"):
-      rewards.pop(reward_name)
-
-    # WTW 任务始终采用独立奖励：速度任务和各个行为项分别交给
-    # RewardManager 累加，便于单独调参和观察每一项的贡献。
-    rewards["wtw_swing_phase_force"].weight = -4.0
-    rewards["wtw_swing_phase_force"].params["force_std"] = 100.0
-    rewards["wtw_stance_phase_velocity"].weight = -4.0
-    rewards["wtw_stance_phase_velocity"].params["velocity_std"] = 10.0
-
-    rewards["wtw_body_height"].weight = 0.80
-    rewards["wtw_body_pitch"].weight = 0.10
-    rewards["wtw_stance_width"].weight = 0.03
-    rewards["wtw_foot_swing_height"].weight = 0.60
-    rewards["wtw_raibert_foot_position"].weight = 0.20
+  if enable_wtw:
+    _configure_wtw_rewards(rewards)
 
   ##
   # Terminations

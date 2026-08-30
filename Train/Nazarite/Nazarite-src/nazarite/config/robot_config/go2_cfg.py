@@ -27,6 +27,13 @@ GO2_FOOT_BODIES = (
     "RL_foot",
     "RR_foot",
 )
+# 髋部身体名称，用于检测髋部与地面的异常接触。
+GO2_HIP_BODIES = (
+    "FL_hip",
+    "FR_hip",
+    "RL_hip",
+    "RR_hip",
+)
 GO2_THIGH_BODIES = (
     "FL_thigh",
     "FR_thigh",
