@@ -10,7 +10,7 @@ Train/Nazarite/
 ├── mjlab/                         # 通用 MuJoCo 强化学习基础库
 │   ├── src/mjlab/
 │   ├── RSL-RL/
-│   └── .venv/                     # 当前开发环境
+├── .venv/                         # 当前开发环境
 └── Nazarite-src/nazarite/         # Nazarite 自定义训练包
     ├── __init__.py                # 任务发现和注册入口
     ├── config/robot_config/        # 机器人与执行器配置
@@ -25,7 +25,7 @@ Train/Nazarite/
 当前虚拟环境位于：
 
 ~~~text
-mjlab/.venv/bin/python
+.venv/bin/python
 ~~~
 
 基础库依赖已经安装，包括 MuJoCo、PyTorch CUDA 12.8、tensordict、RSL-RL、Pyright 和 Ruff。
@@ -48,16 +48,26 @@ Train/Nazarite/mjlab/.venv/bin/python
 
 对应的工作区配置是仓库根目录的 pyrightconfig.json 和 .vscode/settings.json。
 
-## 训练命令
+## 训练与播放
 
-自定义任务层目前仍在搭建中。完成机器人模型、环境配置、MDP 函数和任务注册后，从本目录执行：
+当前已注册的任务：
+
+| ID | 说明 |
+|---|---|
+| `Nazarite-Velocity-Flat-Go2` | Grid Adaptive 平地速度 baseline。 |
+| `Nazarite-Velocity-Flat-Go2-WTW` | Grid Adaptive + WTW Trot 条件速度策略。 |
+
+从本目录执行：
 
 ~~~bash
 uv sync
 uv run list-envs
-uv run train <task-id>
-uv run play <task-id>
+uv run train Nazarite-Velocity-Flat-Go2-WTW
+uv run play Nazarite-Velocity-Flat-Go2-WTW \
+  --checkpoint_file logs/rsl_rl/go2_flat_wtw_independent/<run>/model_2400.pt
 ~~~
+
+`play` 不传 `--checkpoint_file` 时需要 `wandb_run_path`，因此本地检查已训练模型时建议显式传入 checkpoint。WTW play 会保留随机推力作为独立抗扰动检查；网页 `Commands / Behavior` 面板可临时覆盖当前选中环境的行为参数。
 
 ## 配置约定
 
@@ -65,3 +75,4 @@ uv run play <task-id>
 - train_config 负责组装 ManagerBasedRlEnvCfg 与 RslRlOnPolicyRunnerCfg。
 - mdp 负责 Nazarite 专属的观测、奖励、命令、事件、终止和课程函数。
 - 任务通过 mjlab.tasks entry point 暴露给 mjlab 的 train 和 play 命令。
+- `config/train_config/base_env_cfg.py` 是 WTW 默认行为、Grid、观测历史和奖励组合的唯一组装位置；不要在多个任务文件中分散覆盖同一组参数。

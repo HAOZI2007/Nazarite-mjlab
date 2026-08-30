@@ -1,536 +1,199 @@
 # WTW 奖励调参详细使用指南
 
-> 本文针对 Nazarite-mjlab 当前任务 Nazarite-Velocity-Flat-Go2-WTW 编写。所有 WTW 奖励都是独立 RewardTerm，由 RewardManager 直接累加。调参时直接改对应 term 的 weight 或 params。
+> 对应当前 `Nazarite-Velocity-Flat-Go2-WTW`。当前默认目标为单一 Trot、x 速度三格 Grid、频率 `2.0–2.4 Hz`。WTW 使用独立 reward term，不存在也不应再调旧的 `wtw_combined`。
 
-## 1. 先确定修改位置
+## 1. 调参位置与原则
 
-主要配置文件：
+奖励定义集中在：
 
-~~~
-/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/Nazarite-src/nazarite/config/train_config/base_env_cfg.py
-~~~
+```text
+Train/Nazarite/Nazarite-src/nazarite/config/train_config/base_env_cfg.py
+```
 
-Go2 任务绑定和 WTW 专用覆盖：
+- `_make_wtw_rewards()`：所有 WTW 奖励、权重与函数参数；
+- `_configure_wtw_rewards()`：移除会冲突的 baseline gait 奖励并注册 WTW 项；
+- `env_cfgs/go2_env_cfgs.py`：将 Go2 足端 site 绑定给 Raibert 奖励，并设置通用安全奖励、传感器和终止条件；
+- `mdp/wtw_rewards.py`：奖励函数和 TensorBoard 日志；
+- `mdp/commands.py`：Grid 的 gait-aware 成功门槛，不能只看总 reward。
 
-~~~
-/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/Nazarite-src/nazarite/config/train_config/env_cfgs.py
-~~~
+调参的基本单位是“一次只改一个行为假设”。一次同时扩大频率、修改高度、调接触权重和改变 Grid，会使结果无法归因。
 
-奖励实现：
+## 2. 当前奖励表
 
-~~~
-/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/Nazarite-src/nazarite/mdp/wtw_rewards.py
-/home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/Nazarite-src/nazarite/mdp/rewards.py
-~~~
+| term | 权重 | 物理含义 | Trot 下的主要日志 |
+|---|---:|---|---|
+| `track_linear_velocity` | +2.0 | 跟踪 x/y 速度 | `Metrics/twist/error_vel_xy` |
+| `track_angular_velocity` | +2.0 | 跟踪 yaw 速度 | `Metrics/twist/error_vel_yaw` |
+| `wtw_swing_phase_force` | -4.0 | 摆动腿不应明显受力 | `WTW/swing_phase_force_cost`、四脚 swing force |
+| `wtw_stance_phase_velocity` | -4.0 | 支撑腿足端水平速度应小 | `WTW/stance_phase_velocity_cost` |
+| `wtw_contact_schedule` | -1.5 | 实际四脚接触向量匹配 phase | `WTW/contact_schedule_error`、四脚 schedule error |
+| `wtw_group_contact_consistency` | -0.5 | 同步 gait 的高置信 phase 不应混合接触 | 仅 Pronking 类 gait 有意义 |
+| `wtw_body_height` | +40.0 | 跟踪 `0.32 + height_offset` | `WTW/body_height_*` |
+| `wtw_body_pitch` | +0.10 | 跟踪 pitch 行为命令 | reward 曲线与 play 姿态 |
+| `wtw_foot_clearance` | -30.0 | 摆动相连续足端高度轨迹 | `WTW/foot_clearance_cost` |
+| `wtw_raibert_foot_position` | -10.0 | 速度/phase 感知的落点误差 | `WTW/raibert_foot_position_cost` |
+| `wtw_shank_contact` | -0.1 | 小腿触地软惩罚 | `WTW/shank_contact_cost` |
 
-当前任务：
+权重的绝对值不能跨项直接比较。`wtw_foot_clearance` 返回的是四足平方误差和，因此 `-30` 未必比返回 `[0,1]` 代价的 `-4` 更强。判断一项是否主导，必须同时查看未加权日志、episode reward 和 play 行为。
 
-~~~bash
-uv run train Nazarite-Velocity-Flat-Go2-WTW
-uv run play Nazarite-Velocity-Flat-Go2-WTW
-~~~
+以下项在 WTW 中明确不启用：
 
-## 2. 当前总奖励结构
+```text
+air_time
+prolonged_air_time
+stance_contact
+wtw_stance_contact
+wtw_stance_width
+wtw_foot_swing_height
+wtw_combined
+```
 
-RewardManager 对每个 term 计算：
+前三项不读取 phase，容易与指定摆动/支撑结构冲突。`wtw_stance_width` 与旧的落脚峰值高度项分别被 Raibert 落点和连续 clearance 项取代。
 
-~~~
-r_total = Σ(weight_i × term_i)
-~~~
+## 3. active mask、phase 冻结与站立
 
-所以：
+phase 相关 WTW 项共享：
 
-- 正权重通常配合 [0,1] 的“越大越好”奖励；
-- 负权重通常配合“越大越坏”的正代价；
-- term 的原始数值和 weight 的乘积，才是它对总奖励的实际影响；
-- 不要只看 weight 的绝对值，还要看该 term 在 TensorBoard 的平均输出。
+```text
+active = norm([vx, vy]) + abs(wz) > 0.05
+```
 
-当前 WTW 相关结构：
+非 active 时，phase 冻结，摆动相力、支撑相速度、schedule、group consistency、clearance、Raibert、pitch 和小腿接触项都不再优化 gait。零速度的姿态由 `stand_pose` 维持；`zero_command_stillness` 当前权重为 `0.0`，只保留实现和日志，不参与优化。
 
-~~~
-任务奖励：
-  track_linear_velocity       +2.0
-  track_angular_velocity      +2.0
+这意味着低速 cell 并不等于真正站立：只要命令幅值大于 0.05，phase 仍在推进。若低速 cell 难学，先检查它是否频繁落在阈值附近，再决定改阈值或设计专门站立课程。
 
-通用稳定性：
-  upright                     +1.0
-  body_ang_vel                -0.02
-  dof_pos_limits              -0.2
-  joint_acc_l2                -2.5e-7
-  joint_torques_l2            -1.0e-4
-  action_rate_l2              -0.005
-  foot_slip                   -0.05
-  soft_landing                -1.0e-5
+## 4. 三层接触约束应该如何协作
 
-零速站立：
-  stand_pose                  -3.0
-  zero_command_stillness      -0.1
+项目用 `duty_factor=0.5` 和 `smoothing=0.07` 生成平滑的 `desired_contact ∈ [0,1]`：前半周期趋向支撑，后半周期趋向摆动。三个主要接触项层级不同，不能互相替代。
 
-WTW 行为：
-  wtw_swing_phase_force       -4.0
-  wtw_stance_phase_velocity   -4.0
-  wtw_body_height              +0.8
-  wtw_body_pitch              +0.1
-  wtw_stance_width             +0.03
-  wtw_foot_swing_height        +0.6
-  wtw_raibert_foot_position    +0.2
-~~~
+### 4.1 摆动相接触力：`wtw_swing_phase_force`
 
-WTW 任务移除了 air_time、prolonged_air_time 和 stance_contact。原因是它们没有读取 WTW phase，可能与摆动/支撑时序发出相反信号。
+近似为：
 
-## 3. active mask：为什么零速度时很多 WTW 奖励为零
+```text
+mean((1 - desired_contact) × (1 - exp(-force² / force_std)))
+```
 
-WTW 行为奖励使用同一个有效命令判断：
+当前 `force_std=100`。它关心“摆动腿是否拖地/撞地”，不保证支撑腿接触正确。
 
-~~~
-magnitude = norm([vx, vy]) + abs(wz)
-active = magnitude > command_threshold
-~~~
+- 某一脚长期最高：先检查 foot 顺序、传感器映射和相位映射；
+- 四脚都偏高且机器人刻意跳高：增加 `force_std` 或略减小负权重；
+- 摆动脚频繁拖地但姿态正常：先小幅减小 `force_std`，再考虑把权重从 `-4` 调到 `-4.5`。
 
-当前 command_threshold=0.05。
+### 4.2 支撑相足端速度：`wtw_stance_phase_velocity`
 
-当 active=0：
+近似为：
 
-- phase 冻结；
-- 摆动相接触力代价为 0；
-- 支撑相足端速度代价为 0；
-- body pitch、stance width、swing height、Raibert 行为奖励关闭；
-- body height 函数仍计算目标高度奖励，但日志按照 active 过滤；
-- 站立使用 stand_pose 和 zero_command_stillness。
+```text
+mean(desired_contact × (1 - exp(-foot_velocity_xy² / velocity_std)))
+```
 
-这样可以避免零速度站立时，策略被迫继续完成 gait。
+当前 `velocity_std=10`。它抑制足端滑动，但不直接要求该脚必须接触地面。
 
-如果把 command_threshold 改得太小，微小噪声也会触发 gait；改得太大，低速任务会被误当成站立。通常先保持 0.05，只在实际命令抖动明显时改动。
+- 支撑脚打滑：优先减小 `velocity_std`，例如 `10 → 8`；
+- 步态僵硬、拒绝前进：先将权重绝对值略减小，而不是继续加大；
+- 高速时打滑：同时看 Raibert 项、摩擦随机化和速度命令范围。
 
-## 4. 速度任务奖励
+### 4.3 四脚 schedule：`wtw_contact_schedule`
 
-### 4.1 track_linear_velocity
+```text
+cost = mean_i |actual_contact_i - desired_contact_i|
+```
 
-作用：让机体平面线速度跟随 twist 的 vx、vy。
+它才是 Trot 的结构验收项：FR/RL 与 FL/RR 应按相反 phase 交替。当前后期较好的 Trot 结果中该误差约为 `0.12`，且 Grid 成功门槛为 `0.16`。
 
-当前 WTW 权重为 2.0。它是主任务，不能为了接触时序把它压得太低。
+- `>0.16`：课程不会把该命令段认定为成功，应先查 gait 结构或过快频率；
+- 四脚日志长期不对称：首先查腿顺序和 site/sensor，不要直接改权重；
+- 数值下降但 play 仍像非 Trot：检查 phase 是否冻结、速度命令是否真的有效；
+- 时序正确但机器人不稳定：再检查高度、Raibert、推力和终止比例。
 
-现象与调整：
+`wtw_group_contact_consistency` 面向四脚期望同步的 gait。当前 Trot 下四足期望接触不相同，因此其相关的 `pronking_*` 日志为零是正确现象，不代表奖励失效。
 
-| 现象 | 调整 |
-|---|---|
-| 速度追踪差、Grid success 低 | 先检查命令覆盖和随机推力，再小幅增大到 2.5 |
-| 速度很好但步态不稳定 | 不要继续增大；改行为奖励和通用稳定性 |
-| 低速停不住 | 检查零速采样比例、stand_pose 和 stillness |
+## 5. 行为风格项的调法
 
-### 4.2 track_angular_velocity
+### 高度：`wtw_body_height`
 
-作用：跟踪 wz。当前权重为 2.0。
+函数为官方 jump 高度语义的负平方误差：
 
-如果直行很好、转弯腿向外撇，优先检查 Raibert 的 yaw 补偿和 stance width，不要直接大幅提高角速度奖励。
+```text
+target = 0.32 + behavior.body_height_offset
+reward = -(actual_height - target)²
+```
 
-## 5. 零速度站立奖励
+当前权重为 `+40`。不要把它理解成“越高越好”。应同时查看：
 
-### 5.1 stand_pose
-
-stand_pose 是零速度下的关节姿态代价，当前 weight=-3.0。它约束“腿回到站立姿态”。
-
-它与 zero_command_stillness 不同：
-
-~~~
-stand_pose
-  -> 关节位置应接近零速度站立姿态
-
-zero_command_stillness
-  -> 机体线速度、角速度、关节速度应接近 0
-~~~
-
-如果零速度时机器人保持某个稳定但偏离默认站姿的姿态，增加 stand_pose 可能有帮助；如果加大后晃动变大，说明默认姿态与当前身体高度/动作策略冲突，应先减小而不是继续增加。
-
-### 5.2 zero_command_stillness
-
-当前配置：
-
-~~~python
-"zero_command_stillness": RewardTermCfg(
-    func=custom_rewards.zero_command_stillness,
-    weight=-0.1,
-    params={
-        "command_name": "twist",
-        "command_threshold": 0.05,
-        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
-        "linear_velocity_weight": 1.0,
-        "angular_velocity_weight": 1.0,
-        "joint_velocity_weight": 0.05,
-    },
-)
-~~~
-
-它返回正 cost，再乘负权重。三项物理含义：
-
-- linear_velocity_weight：抑制机体平动；
-- angular_velocity_weight：抑制机体摇摆和旋转；
-- joint_velocity_weight：抑制腿部持续抖动。
-
-零速晃动的推荐顺序：
-
-1. 确认 phase 确实冻结；
-2. 看 stand_base_lin_vel、stand_base_ang_vel 和 stand_joint_vel；
-3. 若机体摇摆为主，先调 angular_velocity_weight；
-4. 若腿在快速抖动，调 joint_velocity_weight；
-5. 再小幅调 zero_command_stillness.weight。
-
-不要把它一次提高很多。惩罚过强可能让策略不愿意启动或形成僵硬站姿。
-
-## 6. 接触时序奖励
-
-### 6.1 平滑接触目标
-
-phase 先通过 _smooth_contact_target 生成 C：
-
-~~~
-C≈1：期望支撑
-C≈0：期望摆动
-~~~
-
-smoothing 当前为 0.15：
-
-- 增大到 0.20～0.25：边界更软，训练更容易，但时序更模糊；
-- 减小到 0.08～0.12：时序更硬，但早期探索更容易不稳定。
-
-固定 trot 第一阶段不建议动 smoothing。只有在接触相位整体对、但摆动/支撑边界过于突兀或过于模糊时才调整。
-
-### 6.2 wtw_swing_phase_force
-
-它惩罚摆动相足端接触力：
-
-~~~
-cost = mean((1-C) × [1-exp(-force²/force_std)])
-reward contribution = -weight_magnitude × cost
-~~~
-
-当前 weight=-4.0，force_std=100.0。
-
-force_std 的作用：
-
-- 越小：相同接触力产生更大 cost，约束更敏感；
-- 越大：代价更快饱和前变得不敏感，适合传感器力值较大或早期训练；
-- 不能把 force_std 当成 weight。weight 控制整个 term 的强弱，force_std 控制力代价曲线的尺度。
-
-调节顺序：
-
-1. 先看 WTW/swing_phase_force_cost 和四条腿 force 日志；
-2. 如果 cost 高且摆动相频繁碰地，先保持 weight，减小 force_std，例如 100 到 60；
-3. 如果 cost 已经很低但行为仍不稳定，再小幅增加负权重，例如 -4 到 -5；
-4. 如果机器人为了不碰地而跳跃、落脚不稳，减小负权重，或把 force_std 调大。
-
-### 6.3 wtw_stance_phase_velocity
-
-它惩罚期望支撑相的足端水平速度：
-
-~~~
-cost = mean(C × [1-exp(-velocity_xy²/velocity_std)])
-~~~
-
-当前 weight=-4.0，velocity_std=10.0。
-
-velocity_std 越小，对滑动越敏感；越大，足端需要更快才产生明显代价。调参时：
-
-- 支撑脚明显滑动：先减小 velocity_std 或增大负权重；
-- 原地转向被限制、足端需要自然调整：减小负权重；
-- 直行稳定、转弯差：优先降低该项或 stance width，而不是提高 tracking reward。
-
-### 6.4 为什么不直接用 schedule_error 作为主奖励
-
-代码保留 schedule_error 作为诊断计算，但当前主要优化的是：
-
-- 摆动相力；
-- 支撑相水平速度。
-
-二值接触误差只表示“有没有接触”，不表示摆动相碰撞力多大，也不表示支撑脚是否滑动。因此它更适合作为诊断指标，不应单独替代两个动力学代价。
-
-## 7. 行为参数奖励
-
-### 7.1 wtw_body_height
-
-代码形式：
-
-~~~
-reward = exp(-(actual_height - target_height)² / std²)
-~~~
-
-当前：
-
-~~~python
-weight = 0.80
-std = 0.035
-~~~
-
-weight 决定策略愿意花多大代价跟随行为高度；std 决定误差容忍度。
-
-- 机体总是低于目标：适度增大 weight，检查实际高度和启动瞬间的高度；
-- 高度跟随很好但速度变差：降低 weight；
-- reward 接近 0 且动作难学：增大 std，例如 0.035 到 0.045；
-- 目标高度本身不合理：先改 behavior 的 body_height_range，不要只改 reward weight。
-
-训练时 body_height_range 固定为 0.32，建议先把 reward 调稳定，再开放到 0.30～0.34。body height 变高会改变关节工作区和落脚几何，不能只看日志平均值。
-
-### 7.2 wtw_body_pitch
-
-当前 weight=0.10，std=0.08。它跟踪 behavior 的 body_pitch。
-
-- pitch 明显偏差：先确认 projected gravity 的 pitch 计算和坐标约定；
-- 直行自然、转弯僵硬：降低 weight；
-- 只训练 phi=0：这个 term 可以很小，不需要成为主奖励；
-- 开放到 -0.05～0.05 后，观察行为日志和实际 pitch，不要立刻扩大到很大的范围。
-
-### 7.3 wtw_stance_width
-
-当前 weight=0.03，std=0.035。它比较机体坐标系中四个足端的横向绝对距离与 sy/2。
-
-该项很容易和转弯、侧向运动冲突，所以保持小权重。出现以下现象时降低它：
-
-- 转弯时脚被拉到固定横向位置；
-- 高速时前后腿向不同方向撇；
-- 站姿宽度日志很好，但速度追踪变差。
-
-站姿宽度的单位是米，奖励比较的是每只脚到机体中心线的距离，因此目标使用 sy/2。
-
-### 7.4 wtw_foot_swing_height
-
-当前 weight=0.60，std=0.04，smoothing=0.15。它在 first_contact 时评价上一摆动相的峰值高度。
-
-注意它不是“脚越高越好”，而是“峰值接近 hfz 最好”。
-
-- 摆腿高度不足：先确认 WTW/swing_height_error，适度增大 weight 或增大 hfz；
-- 脚抬得过高、动作像跳跃：降低 weight，或降低 hfz；
-- 日志长期约 0：检查 contact sensor 的 first_contact、height sensor 和落脚事件；
-- 四条腿差异大：检查 sensor/site 顺序和每腿的缓存 reset。
-
-过大的摆腿奖励会让策略为了追踪高度制造不必要的腿部运动，因此通常不先把它调到很高。
-
-### 7.5 wtw_raibert_foot_position
-
-当前 weight=0.20，std=0.08。该项只在期望摆动相比较目标落点。
-
-它使用：
-
-- reset 后足端名义位置；
-- stance_width；
-- 速度命令与当前机体速度误差；
-- frequency；
-- yaw 角速度。
-
-它不是完整动力学控制器。调参原则：
-
-- 直行已稳定但落脚前后偏差大：小幅增加 weight；
-- 转弯出现横向撇腿：降低 weight，检查 yaw 补偿；
-- 前腿和后腿朝相反方向偏：先检查腿映射和 phase，不要先改 weight；
-- 步频变化后落点误差变大：检查 0.5/frequency 的尺度是否合理。
-
-## 8. 通用奖励的调参边界
-
-WTW 不是只由 WTW term 组成。以下通用奖励仍会影响表现：
-
-| term | 作用 | 调参风险 |
-|---|---|---|
-| upright | 防止身体倾倒 | 太低容易摔，太高可能僵硬 |
-| body_ang_vel | 抑制机体角速度 | 太高会限制自然动态 |
-| action_rate_l2 | 平滑动作 | 太高导致小碎步或不愿启动 |
-| foot_slip | 抑制接触脚滑动 | 太高会限制转弯 |
-| soft_landing | 抑制冲击 | 太高会限制快速落脚 |
-| joint_torques_l2 | 降低能耗 | 太高会导致无力 |
-| joint_acc_l2 | 降低高频关节加速度 | 太高会导致动作迟钝 |
-| dof_pos_limits | 防止越界 | 一般不作为步态主调参项 |
-
-WTW 已经将 pose weight 设为 0，避免默认姿态奖励压过行为奖励。不要在 WTW 任务中无意恢复一个强固定 pose。
-
-## 9. 推荐调参顺序
-
-### 阶段 A：固定行为和 trot
-
-~~~python
-frequency_range=(2.0, 2.0)
-body_height_range=(0.32, 0.32)
-body_pitch_range=(0.0, 0.0)
-stance_width_range=(0.21, 0.21)
-foot_swing_height_range=(0.07, 0.07)
-gait_names=("trot",)
-~~~
-
-目标：速度能跟踪、零速能站稳、接触时序不明显错乱。
-
-### 阶段 B：先调任务和时序
-
-1. track_linear_velocity；
-2. track_angular_velocity；
-3. wtw_swing_phase_force；
-4. wtw_stance_phase_velocity；
-5. upright 和 body_ang_vel。
-
-### 阶段 C：再调行为参数跟随
-
-1. wtw_body_height；
-2. wtw_foot_swing_height；
-3. wtw_body_pitch；
-4. wtw_stance_width；
-5. wtw_raibert_foot_position。
-
-### 阶段 D：最后调零速静止和随机推力
-
-1. phase 是否冻结；
-2. stand_pose；
-3. zero_command_stillness；
-4. push_robot 的强度和间隔；
-5. Grid Adaptive 的课程速度。
-
-一次只改一个奖励族。每次训练都记录改动前后的日志路径、checkpoint 和关键权重。
-
-## 10. 按现象调参
-
-| 现象 | 首要判断 | 推荐动作 |
-|---|---|---|
-| 零速度机体晃动 | phase 是否冻结；看 base/angular/joint vel | 先调 stillness 的对应子权重，再小幅调 weight |
-| 加大 stand_pose 后更晃 | 位置目标与行为/高度冲突 | 降低 stand_pose，检查 body height |
-| 2 m/s 启动时下沉 | 高度目标或动态支撑不足 | 看 body_height_actual/error，适度提高高度项 |
-| 高频小碎步 | 步频、动作平滑、时序边界 | 固定 frequency，检查 action_rate 和 swing height |
-| 摆动脚经常碰地 | swing force cost 高 | 减小 force_std 或适度增加负权重 |
-| 支撑脚滑 | stance velocity cost 高 | 减小 velocity_std 或适度增加负权重 |
-| 转弯困难 | 支撑脚/站姿约束过强 | 降低 stance velocity、stance width 或 Raibert |
-| 前腿向左后腿向右 | 映射错误概率高 | 检查 [FL,FR,RL,RR]、theta offset、site 顺序 |
-| 脚抬得过高 | swing height 权重或目标过大 | 降低 weight 或 hfz |
-| body height 日志很好但动作差 | 该奖励压过速度和接触 | 降低 body height weight |
-| Grid success 上升但 gait 差 | Grid 只衡量速度任务 | 查看 WTW cost/score 和 play |
-| 推力后容易倒 | 扰动覆盖不足或 upright 太弱 | 保持 play 同推力，检查训练 push 和 upright |
-
-## 11. 参数范围建议
-
-第一阶段固定：
-
-~~~text
-frequency = 2.0
-body_height = 0.32
-body_pitch = 0.0
-stance_width = 0.21
-swing_height = 0.07
-~~~
-
-稳定后逐一开放：
-
-~~~text
-frequency:        1.5 到 3.0 Hz
-body_height:      0.30 到 0.34 m
-body_pitch:      -0.05 到 0.05 rad
-stance_width:     0.18 到 0.24 m
-swing_height:     0.05 到 0.10 m
-~~~
-
-不要同时开放全部范围并改变大量奖励。行为范围扩大后，原来合适的一个 weight 可能不再适合所有行为。
-
-## 12. TensorBoard 判断流程
-
-先看任务是否学会：
-
-~~~text
-Metrics/twist/grid_success
-Metrics/twist/grid_active_cells
-Metrics/twist/grid_total_visits
-Metrics/twist/error_vel_xy
-Metrics/twist/error_vel_yaw
-~~~
-
-再看行为是否被采样：
-
-~~~text
-Metrics/behavior/wtw_frequency
-Metrics/behavior/wtw_body_height
-Metrics/behavior/wtw_swing_height
-Metrics/behavior/wtw_gait_id
-~~~
-
-再看时序和行为：
-
-~~~text
-WTW/swing_phase_force_cost
-WTW/swing_phase_force_score
-WTW/stance_phase_velocity_cost
-WTW/stance_phase_velocity_score
+```text
 WTW/body_height_actual
+WTW/body_height_target
+WTW/body_height_signed_error
 WTW/body_height_error
-WTW/swing_height_error
-WTW/foot_FL_swing_force
-WTW/foot_FR_swing_force
-WTW/foot_RL_swing_force
-WTW/foot_RR_swing_force
-~~~
+WTW/body_height_min
+```
 
-最后看零速：
+`2026-08-30_19-18-04` 的宽频 `2–3 Hz` Trot 平均高度约 `0.343 m`，目标是 `0.32 m`，出现约 `+0.023 m` 稳定上漂。固定 `2 Hz` 的此前运行约为 `0.319 m`。因此面对高度上漂，优先顺序是：
 
-~~~text
-WTW/stand_base_lin_vel
-WTW/stand_base_ang_vel
-WTW/stand_joint_vel
-WTW/stand_still_cost
-Episode_Reward/stand_pose
-Episode_Reward/zero_command_stillness
-~~~
+1. 收窄频率范围（当前默认已收为 `2.0–2.4 Hz`）；
+2. 用网页 Behavior 面板固定频率分别验证高度；
+3. 若同一频率仍稳定上漂，再小幅提高高度项权重或调整基础目标；
+4. 不要在同一轮同时改接触 reward，否则难以判断原因。
 
-解读原则：
+### Clearance：`wtw_foot_clearance`
 
-- cost 下降、score 上升，通常表示该动力学目标改善；
-- 奖励 term 的 episode contribution 变得更负，不一定是坏事，要结合 cost 和任务表现；
-- 四条腿某一条明显偏高，优先检查传感器顺序和相位；
-- 零速度日志不应和运动时日志混为一个平均值。
+该项在整个摆动相监督 `0 → foot_swing_height + foot_radius → 0`，当前 `foot_swing_height=0.06 m`、`foot_radius=0.02 m`。它比“落脚瞬间只看峰值”稳定。
 
-## 13. 修改示例
+- cost 很低而脚仍拖地：检查 contact force 和实际足端接触时机；
+- cost 高且机器人过度抬腿：减小摆腿高度命令，或降低 `-30` 的绝对值；
+- 不要重新叠加旧 `wtw_foot_swing_height`，它会提供第二套不同的高度监督。
 
-只提高高度奖励，不改变其他项：
+### Raibert 落点：`wtw_raibert_foot_position`
 
-~~~python
-rewards["wtw_body_height"].weight = 1.0
-~~~
+该项使用速度命令、实际速度误差、phase、频率、yaw 补偿和名义落点构造四脚目标。它包含名义站宽含义，因此当前不额外启用 `wtw_stance_width`。
 
-让摆动接触力更敏感：
+前后腿向相反方向撇，排查顺序应是：腿顺序 → theta/phase 映射 → 是否训练过横向/yaw → Raibert 项。只有前三项确定正确后再微调权重或 `stance_length`。
 
-~~~python
-rewards["wtw_swing_phase_force"].params["force_std"] = 70.0
-~~~
+## 6. 课程参数不是 reward，但必须一起看
 
-降低支撑相滑动约束：
+当前 WTW Grid：
 
-~~~python
-rewards["wtw_stance_phase_velocity"].weight = -3.0
-~~~
+```python
+grid_num_x = 3
+grid_num_yaw = 1
+lin_vel_x = (-1.0, 1.0)
+initial_cell = (1, 0)
+min_cell_visits = success_window_size = 8192
+success_rate_threshold = 0.8
+require_all_active_cells_ready = True
+velocity_error_threshold = 0.25
+gait_schedule_error_threshold = 0.16
+```
 
-提高零速时关节静止约束：
+`grid_success` 是一个命令段是否同时满足速度、终止和 gait 时序门槛的结果，不是 reward。`grid_active_cells` 应从 `1 → 2 → 3` 串行增长；短暂显示小数是不同环境 reset 时的日志平均，不表示存在“半个 cell”。
 
-~~~python
-rewards["zero_command_stillness"].params["joint_velocity_weight"] = 0.10
-~~~
+分析 checkpoint 时应看每格近期窗口成功率，而非仅看累计成功率。中间低速 cell 的累计指标会被训练早期样本拉低，近期 `8192` 窗口才描述当前策略水平。
 
-修改后要重新训练；已经保存的 checkpoint 不会自动使用新 reward 配置。
+## 7. 推荐实验顺序
 
-## 14. 训练前检查清单
+| 阶段 | 只改变的变量 | 验收 |
+|---|---|---|
+| A | 固定 Trot、固定 2 Hz | 速度、时序、站立都稳定。 |
+| B | 频率 `2.0–2.4 Hz` | 全部 3 cell 激活，schedule `<0.16`，高度不系统上漂。 |
+| C | 仅开放一个风格参数 | 对应误差跟随、速度和时序不退化。 |
+| D | 新 gait 的独立任务 | 使用该 gait 自己的时序指标。 |
+| E | 多 gait 条件策略 | 所有 gait 组合采样且分别评估。 |
 
-- 任务名是否为 Nazarite-Velocity-Flat-Go2-WTW；
-- behavior 和 phase 是否同时进入 actor；
-- actor/critic 历史是否仍为 10/3；
-- behavior 是否只采样 trot；
-- 零速比例是否足够；
-- phase threshold 是否为 0.05；
-- WTW 奖励是否全部独立注册；
-- air_time、prolonged_air_time、stance_contact 是否未被重新加入；
-- WTW 任务是否移除了固定 base_height；
-- play 是否保留 push_robot；
-- reward 和 command 参数是否与本次实验记录一致。
+每一轮训练结束至少检查：
 
-## 15. 实机前验收
+```text
+Train/mean_episode_length
+Metrics/twist/grid_active_cells
+Metrics/twist/grid_success
+Metrics/twist/error_vel_xy
+Metrics/twist/grid_gait_schedule_error
+WTW/contact_schedule_error
+WTW/body_height_actual / target / signed_error
+WTW/swing_phase_force_cost
+WTW/stance_phase_velocity_cost
+Episode_Termination/*
+```
 
-至少完成：
-
-~~~text
-固定 0 m/s：站立 30 秒不持续晃动
-0 -> 1 m/s：启动不突然下蹲
-1 -> 0 m/s：平稳刹停并保持站立
-前进、后退、侧移：腿序对称
-不同 yaw：不因 Raibert/stance width 锁死
-随机推力：能恢复
-~~~
-
-实机部署时只使用 actor 可获得的本体观测。行为参数和 phase 必须由同样的顺序、单位和阈值生成，且行为切换应做平滑插值。
-
+总 reward 上升不是单独的验收标准；它可能来自降低动作惩罚，却掩盖接触时序或高度偏置的恶化。
