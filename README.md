@@ -72,4 +72,41 @@ uv run play Nazarite-Velocity-Flat-Go2-WTW \
 
 网页 play 的 `Commands` 区域同时提供速度控制器和 WTW `Behavior` 面板。打开 `Enable override` 后，可以实时修改当前选中环境的频率、机体高度偏移、pitch、步宽和摆腿高度；这仅用于验证 checkpoint，不会改变训练配置。
 
-## 引用区
+## 引用区(本项目所参考使用的仓库)
+1. mjlab
+- https://github.com/mujocolab/mjlab
+~~~bash
+@misc{zakka2026mjlablightweightframeworkgpuaccelerated,
+  title={mjlab: A Lightweight Framework for GPU-Accelerated Robot Learning},
+  author={Kevin Zakka and Qiayuan Liao and Brent Yi and Louis Le Lay and Koushil Sreenath and Pieter Abbeel},
+  year={2026},
+  eprint={2601.22074},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2601.22074},
+}
+~~~
+2. WTW(Walk These Ways: Tuning Robot Control for
+Generalization with Multiplicity of Behavior)
+- https://github.com/Improbable-AI/walk-these-ways
+~~~bash
+@article{margolis2022walktheseways,
+    title={Walk These Ways: Tuning Robot Control for Generalization with Multiplicity of Behavior},
+    author={Margolis, Gabriel B and Agrawal, Pulkit},
+    journal={Conference on Robot Learning},
+    year={2022}
+}
+~~~
+3. FR-Net
+- Y. Lu, Y. Dong, J. Zhang, J. Ma, and P. Lu. FR-Net: Learning Robust Quadrupedal Fall Recovery on Challenging Terrains through Mass-Contact Prediction. IEEE Robotics and Automation Letters, 10(7):6632–6639, 2025. DOI:10.1109/LRA.2025.3569117 · IEEE Xplore · arXiv:2509.11504
+~~~bash
+@ARTICLE{10999057,
+  author={Lu, Yidan and Dong, Yinzhao and Zhang, Jiahui and Ma, Ji and Lu, Peng},
+  journal={IEEE Robotics and Automation Letters},
+  title={FR-Net: Learning Robust Quadrupedal Fall Recovery on Challenging Terrains through Mass-Contact Prediction},
+  year={2025},
+  volume={10},
+  number={7},
+  pages={6632-6639},
+  doi={10.1109/LRA.2025.3569117}}
+~~~
