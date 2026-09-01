@@ -16,6 +16,9 @@ dependencies = [
 [project.entry-points."mjlab.tasks"]
 nazarite = "nazarite"
 
+[project.scripts]
+frnet-evaluate = "nazarite.scripts.evaluate_frnet_recovery:main"
+
 [dependency-groups]
 dev = [
   "pytest>=9.0.0",
