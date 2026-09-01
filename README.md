@@ -1,7 +1,8 @@
 # Nazarite-mjlab
 
-本项目极大程度参考了山东华宇工学院 HYNova 战队轮足机器人项目的开源仓库（https://github.com/zeitvex/RC_WheelLeg/tree/main）。
-在这里十分感谢HYNova战队对本框架的大力支持。
+## 鸣谢
+
+- 本项目极大程度参考了山东华宇工学院 HYNova 战队轮足机器人项目的开源仓库，在这里十分感谢HYNova战队对本框架的大力支持。https://github.com/zeitvex/RC_WheelLeg/tree/main
 
 Nazarite东莞理工学院行者实验室 轮腿机器人 MuJoCo 强化学习与 sim-to-real 工程。
 
@@ -70,3 +71,5 @@ uv run play Nazarite-Velocity-Flat-Go2-WTW \
 ~~~
 
 网页 play 的 `Commands` 区域同时提供速度控制器和 WTW `Behavior` 面板。打开 `Enable override` 后，可以实时修改当前选中环境的频率、机体高度偏移、pitch、步宽和摆腿高度；这仅用于验证 checkpoint，不会改变训练配置。
+
+## 引用区
