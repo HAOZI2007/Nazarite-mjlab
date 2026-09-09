@@ -75,7 +75,7 @@ def _make_wtw_behavior_command() -> WTWBehaviorCommandCfg:
     stance_width_range=(0.25, 0.25),
     foot_swing_height_range=(0.06, 0.06),
     duty_factor=0.5,
-    gait_names=("trot",),
+    gait_names=("pronking",),
     # reset 从支撑相开始，避免随机初相位与初始站姿冲突。
     randomize_initial_phase=False,
     debug_vis=False,
