@@ -14,8 +14,15 @@ Train/Nazarite/
 └── Nazarite-src/nazarite/         # Nazarite 自定义训练包
     ├── __init__.py                # 任务发现和注册入口
     ├── config/robot_config/        # 机器人与执行器配置
-    ├── config/train_config/        # 环境和 PPO 配置
+    ├── config/train_config/
+    │   ├── env_cfgs/              # 通用 Go2 环境配置
+    │   ├── frnet_config/          # FR-Net 环境与 PPO 配置
+    │   ├── smp_config/            # SMP 教师/下游环境与 PPO 配置
+    │   └── train_algorithm/smp/   # SMP prior、GSI、guidance 和教师算法
     └── mdp/                       # 自定义观测、奖励、命令等
+├── tools/smp_tools/               # 3DDogs → Go2 → SMP 离线工具
+├── tools/smp_dataset/             # SMP 数据子集与本地扩散 prior
+└── output/                        # 本地生成产物，禁止提交
 ~~~
 
 详细的依赖关系、任务注册链路和当前缺口见 [DEPENDENCIES.md](DEPENDENCIES.md)。
@@ -73,6 +80,10 @@ uv run play Nazarite-Velocity-Flat-Go2-WTW \
 
 - robot_config 只负责机器人 XML/MJCF、实体、执行器、初始状态和尺度参数。
 - train_config 负责组装 ManagerBasedRlEnvCfg 与 RslRlOnPolicyRunnerCfg。
+- train_config/train_algorithm 负责训练任务专属算法实现；SMP 代码统一放在其
+  `smp/` 子包中。
 - mdp 负责 Nazarite 专属的观测、奖励、命令、事件、终止和课程函数。
 - 任务通过 mjlab.tasks entry point 暴露给 mjlab 的 train 和 play 命令。
 - `config/train_config/base_env_cfg.py` 是 WTW 默认行为、Grid、观测历史和奖励组合的唯一组装位置；不要在多个任务文件中分散覆盖同一组参数。
+- `output/`、训练日志和模型权重不得提交，完整规则见仓库根目录
+  `CONTRIBUTING.md`。

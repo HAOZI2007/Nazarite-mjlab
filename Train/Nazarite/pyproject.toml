@@ -18,6 +18,7 @@ nazarite = "nazarite"
 
 [project.scripts]
 frnet-evaluate = "nazarite.scripts.evaluate_frnet_recovery:main"
+smp-pretrain = "nazarite.config.train_config.train_algorithm.smp.prior.train:main"
 
 [dependency-groups]
 dev = [
