@@ -274,16 +274,22 @@ def _solve_foot_ik(
 def _retarget_targets(
   motion: dict[str, np.ndarray], foot_offsets: np.ndarray, motion_scale: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-  """Map dog root/paw motion into a Go2-sized root and four foot targets."""
+  """Map dog motion into a Go2-sized, initial-body canonical frame.
+
+  The root orientation is expressed relative to the first dog body frame.  The
+  root translation must use that same frame; otherwise clips recorded with a
+  different initial global heading acquire a false sign in local ``vx``.
+  """
   root_position = motion["root_pos_mujoco"]
   rotations_dog = _root_rotations(motion["root_forward_mujoco"], motion["root_left_mujoco"])
   rotations_go2 = rotations_dog @ rotations_dog[0].T
   root_quaternion = np.stack(
     [_matrix_to_quaternion_wxyz(rotation) for rotation in rotations_go2]
   )
-  target_root_position = (
-    NAZARITE_BASE_POS + motion_scale * (root_position - root_position[0])
-  )
+  # R0 is world-from-initial-body.  For row vectors, multiplying by R0 gives
+  # coordinates in the initial body frame, matching rotations_go2 at t=0.
+  root_delta_initial_body = (root_position - root_position[0]) @ rotations_dog[0]
+  target_root_position = NAZARITE_BASE_POS + motion_scale * root_delta_initial_body
   paws_relative_body = np.einsum(
     "tji,tlj->tli", rotations_dog, motion["paw_pos_mujoco"] - root_position[:, None]
   )

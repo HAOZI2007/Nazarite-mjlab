@@ -10,9 +10,14 @@
 
 ```text
 tools/smp_tools/
+├── video/
+│   ├── infer_dog_pose.py         # 解码视频并调用外部 GQMR 姿态插件
+│   └── convert_dlc_to_gqmr.py    # DLC CSV → GQMR dog-27 2D JSON/NPZ
 ├── data/
 │   ├── inspect_3ddogs.py          # 读取单个 3DDogs optical trial
 │   ├── scan_3ddogs.py             # 扫描有效帧段并生成 CSV manifest
+│   ├── classify_3ddogs_clips.py   # 按解剖学前向速度分类行为片段
+│   ├── catalog_3ddogs.py          # 汇总 Optical、RGBD、视频和标定的对应关系
 │   └── visualize_3ddogs_mocap.py  # 绘制 3D 骨架和足端轨迹
 ├── coordinates/
 │   └── validate_3ddogs_coordinates.py  # 验证 3DDogs → MuJoCo 坐标变换
@@ -38,6 +43,82 @@ tools/smp_tools/
 │   └── export_teacher_rollouts.py # 从教师 checkpoint 导出物理可执行轨迹
 └── README.md
 ```
+
+## GQMR 视频姿态入口（第一阶段）
+
+外部插件包位于 `tools/gqmr_plugins/dog_pose_backend/`。目前只注册
+`dog-pose-fixture`，用于验证视频解码、插件发现、时间戳和安全 NPZ I/O；它输出
+静态 2D 骨架并明确标记 `training_eligible=false`，绝不能用于 SMP 训练。
+
+在 GQMR 独立环境安装插件后，可做接口冒烟测试：
+
+```bash
+cd /home/haozi/桌面/GQMR-main
+uv sync --frozen --extra test
+uv pip install --python .venv/bin/python --no-deps -e \
+  /home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/tools/gqmr_plugins/dog_pose_backend
+
+.venv/bin/python \
+  /home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/tools/smp_tools/video/infer_dog_pose.py \
+  --input /path/to/dog.mp4 \
+  --output /home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/output/gqmr_video/smoke/keypoints_2d.npz \
+  --backend dog-pose-fixture \
+  --max-frames 30 \
+  --allow-fixture-backend
+```
+
+真实模型接入后仍只会先写入 `output/gqmr_video/`。2D 结果必须继续经过相机
+标定、三维重建、GQMR 世界坐标变换、Go2 重定向和 Nazarite 实际控制器物理
+筛选，才能进入被忽略的 `tools/smp_dataset/`。
+
+如果 DeepLabCut 已经在独立环境中产生 CSV，不需要姿态插件。直接在 GQMR
+环境中运行离线格式适配：
+
+```bash
+cd /home/haozi/桌面/GQMR-main
+
+.venv/bin/python \
+  /home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/tools/smp_tools/video/convert_dlc_to_gqmr.py \
+  --input /path/to/camera_1_dlc.csv \
+  --output /home/haozi/桌面/Nazarite-mjlab/Train/Nazarite/output/gqmr_video/clip_001/camera_1_dog27.json \
+  --fps 60 \
+  --confidence-threshold 0.6
+```
+
+默认要求 DLC bodypart 已使用 dog-27 名称；`pelvis_duplicate` 会由 `pelvis`
+自动复制。如果名称不同，传入一个“DLC 名称 → dog-27 名称”的严格 JSON：
+
+```bash
+  --mapping /path/to/dlc_to_dog27.json
+```
+
+可编辑的 identity 示例位于
+`tools/smp_tools/video/config/dlc_dog27_identity_mapping.json`。输出 JSON 可直接
+作为当前 `gqmr pose triangulate` 的输入；输出 NPZ 更紧凑，但当前 GQMR
+三角化 CLI 不直接接受 NPZ。两种输出都标记 `training_eligible=false`。
+
+速度和行为分类只读审计：
+
+```bash
+python tools/smp_tools/data/classify_3ddogs_clips.py \
+  --manifest output/smp_bidirectional/full_scan/selected_clips.csv \
+  --output-dir output/smp_bidirectional/classification \
+  --deadband 0.3
+```
+
+输出 `direction_behavior_manifest.json` 和按类别划分的 CSV。速度是在犬的
+解剖学前向坐标中计算的，不能只根据 3DDogs 的全局 x 轴判断前进或后退。
+
+完整数据包的模态清单：
+
+```bash
+python tools/smp_tools/data/catalog_3ddogs.py \
+  --dataset-root /home/haozi/3DDogs/3DDogs2024_full \
+  --output-dir output/3ddogs_catalog
+```
+
+它会生成 `3ddogs_modality_catalog.json`、`3ddogs_sequence_catalog.csv`、
+`rgbd_only_video_candidates.csv` 和 `optical_labeled_sequences.csv`。
 
 ## 闭环教师环境的计划结构
 

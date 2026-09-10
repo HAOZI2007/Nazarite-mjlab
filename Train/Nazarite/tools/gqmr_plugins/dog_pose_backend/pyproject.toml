@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nazarite-gqmr-dog-pose"
+version = "0.1.0"
+description = "Dog-pose backend boundary for the Nazarite GQMR video pipeline"
+requires-python = ">=3.12,<3.14"
+
+[project.entry-points."gqmr.pose_backends"]
+dog-pose-fixture = "gqmr_dog_pose.backend:FixtureDogPoseBackend"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["gqmr_dog_pose*"]
