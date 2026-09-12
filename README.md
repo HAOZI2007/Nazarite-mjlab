@@ -45,6 +45,7 @@ SMP（Score-Matching Motion Prior）相关代码和数据处理工具目前保�
 ~~~
 
 训练项目说明见 [Train/Nazarite/README.md](Train/Nazarite/README.md)，详细依赖关系见 [Train/Nazarite/DEPENDENCIES.md](Train/Nazarite/DEPENDENCIES.md)。
+sim2sim 使用说明见 [Train/Nazarite/sim2sim/README.md](Train/Nazarite/sim2sim/README.md)。
 
 ## 当前环境与检查
 

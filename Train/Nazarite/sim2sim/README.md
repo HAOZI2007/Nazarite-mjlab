@@ -69,6 +69,16 @@ uv sync
 uv run python -c "import mujoco, numpy, onnxruntime; print('sim2sim dependencies: OK')"
 ```
 
+如果当前环境提示 `ModuleNotFoundError: No module named 'onnxruntime'`，说明
+项目环境还没有安装 ONNX 推理后端。当前 sim2sim 的 `policy_runner.py` 会在
+启动时导入它，即使本次使用的是 `.pt` 模型也需要该依赖；可先在当前环境补装：
+
+```bash
+uv pip install onnxruntime
+```
+
+这是 sim2sim 当前运行环境的依赖要求，不会改变训练任务配置。
+
 其中：
 
 - `mujoco`：运行物理仿真和 viewer；
@@ -386,11 +396,16 @@ uv run python -m sim2sim.main --list-gamepads
 phase，不重建训练时的奖励、Grid 课程或 domain randomization。它的作用是
 验证已训练策略的输入输出接口和基础运动效果。
 
+另外，当前 sim2sim 使用的 WTW command 限幅为 `vx∈[-2, 2] m/s`、
+`vy∈[-1, 1] m/s`、`yaw∈[-1, 1] rad/s`，它比当前训练配置的范围更宽。为了
+避免测试超出策略训练分布，建议实际运行时仍限制在训练范围：
+`vx∈[-1, 1]`、`vy∈[-0.5, 0.5]`、`yaw∈[-1, 1]`。
+
 ## 11. 相关配置和文档
 
 - 训练任务总览：[Train/Nazarite/README.md](../README.md)
-- WTW 实现说明：[WTW-从零手写Walk-These-Ways](../../docs/WTW-从零手写Walk-These-Ways.md)
-- WTW 步态行为设计：[WTW-步态行为设计教程](../../docs/WTW-步态行为设计教程.md)
-- WTW 奖励调参：[WTW奖励调参详细使用指南](../../docs/WTW奖励调参详细使用指南.md)
+- WTW 实现说明：[WTW-从零手写Walk-These-Ways](../../../docs/WTW-从零手写Walk-These-Ways.md)
+- WTW 步态行为设计：[WTW-步态行为设计教程](../../../docs/WTW-步态行为设计教程.md)
+- WTW 奖励调参：[WTW奖励调参详细使用指南](../../../docs/WTW奖励调参详细使用指南.md)
 - 当前 WTW 训练配置：`../Nazarite-src/nazarite/config/train_config/base_env_cfg.py`
 - 当前 Go2 机器人配置：`../Nazarite-src/nazarite/config/robot_config/go2_cfg.py`

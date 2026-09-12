@@ -103,6 +103,9 @@ WTW 当前默认是固定 Trot，行为频率范围为 `2.0–3.0 Hz`，Grid Ada
 堆叠 5 帧，phase 的 sin/cos 不堆叠历史。具体参数以
 `Nazarite-src/nazarite/config/train_config/base_env_cfg.py` 为准。
 
+sim2sim 的运行、模型接口、观测维度、WTW phase 和手柄控制说明见
+[sim2sim/README.md](sim2sim/README.md)。
+
 ## SMP 冻结说明
 
 SMP 代码不再更新，但为可复现性保留。默认 prior、数据处理、GSI、扩散 prior
