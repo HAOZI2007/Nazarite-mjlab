@@ -157,6 +157,15 @@ def _median_filter(values: np.ndarray, window: int) -> np.ndarray:
   return result
 
 
+def _median_filter_foot_targets(values: np.ndarray, window: int) -> np.ndarray:
+  """Median-filter each foot trajectory without mixing legs or axes."""
+  if window <= 1:
+    return values.copy()
+  frames, legs, axes = values.shape
+  flattened = values.reshape(frames, legs * axes)
+  return _median_filter(flattened, window).reshape(frames, legs, axes)
+
+
 def _solve_foot_ik_bounded(
   model: mujoco.MjModel,
   data: mujoco.MjData,
@@ -432,6 +441,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
   parser.add_argument("--max-joint-step-rad", type=float, default=0.12)
   parser.add_argument("--refinement-passes", type=int, default=2)
   parser.add_argument("--median-window", type=int, default=5)
+  parser.add_argument(
+    "--target-median-window",
+    type=int,
+    default=1,
+    help="Optional odd-frame median filter for task-space paw targets; 1 disables it",
+  )
   parser.add_argument("--contact-height-threshold-m", type=float, default=0.025)
   parser.add_argument("--contact-speed-threshold-mps", type=float, default=0.25)
   parser.add_argument("--minimum-contact-frames", type=int, default=3)
@@ -457,8 +472,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     raise ValueError("--motion-scale must be positive")
   if args.damping <= 0.0 or args.max_iterations <= 0 or args.refinement_passes < 0:
     raise ValueError("damping, max-iterations, and refinement-passes must be valid")
-  if args.median_window < 1 or args.median_window % 2 == 0:
-    raise ValueError("--median-window must be a positive odd integer")
+  if (
+    args.median_window < 1
+    or args.median_window % 2 == 0
+    or args.target_median_window < 1
+    or args.target_median_window % 2 == 0
+  ):
+    raise ValueError("median windows must be positive odd integers")
   if args.ground_clearance_m < 0.0:
     raise ValueError("--ground-clearance-m must be non-negative")
   if not 0.0 <= args.contact_anchor_strength <= 1.0:
@@ -493,6 +513,7 @@ def main(argv: Sequence[str] | None = None) -> None:
   raw_targets = raw_targets.copy()
   root_position[:, 2] += ground_lift
   raw_targets[..., 2] += ground_lift
+  raw_targets = _median_filter_foot_targets(raw_targets, args.target_median_window)
   contact, contact_probability, ground_height = _estimate_contacts(
     motion["paw_pos_mujoco"],
     fps,
@@ -624,6 +645,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     "max_joint_step_rad": args.max_joint_step_rad,
     "refinement_passes": args.refinement_passes,
     "median_window": args.median_window,
+    "target_median_window": args.target_median_window,
     "successful_frames": int(np.count_nonzero(valid_status)),
     "repaired_frames": repaired_frames,
     "success_fraction": float(np.mean(valid_status)),

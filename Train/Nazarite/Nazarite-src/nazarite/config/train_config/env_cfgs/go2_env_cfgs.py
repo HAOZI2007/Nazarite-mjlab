@@ -17,6 +17,7 @@ from nazarite.config.robot_config.go2_cfg import (
   GO2_ACTION_SCALE,
   GO2_BASE_BODY,
   GO2_CALF_BODIES,
+  GO2_FOOT_BODIES,
   GO2_FOOT_GEOMS,
   GO2_FOOT_SITES,
   GO2_HIP_BODIES,
@@ -154,8 +155,13 @@ def Nazarite_Velocity_Flat_Go2(
   ##
   # Events
   ##
-  cfg.events["foot_friction"].params["asset_cfg"].geom_names = GO2_FOOT_GEOMS
+  # The reference randomizes all rigid shapes, rather than only foot geoms.
+  cfg.events["foot_friction"].params["asset_cfg"].geom_names = None
   cfg.events["base_com"].params["asset_cfg"].body_names = (GO2_BASE_BODY,)
+  cfg.events["base_mass"].params["asset_cfg"].body_names = (GO2_BASE_BODY,)
+  cfg.events["link_mass"].params["asset_cfg"].body_names = (
+    GO2_HIP_BODIES + GO2_THIGH_BODIES + GO2_CALF_BODIES + GO2_FOOT_BODIES
+  )
 
   ##
   # Rewards
@@ -184,9 +190,7 @@ def Nazarite_Velocity_Flat_Go2(
     cfg.rewards["wtw_raibert_foot_position"].params[
       "asset_cfg"
     ].site_names = GO2_FOOT_SITES
-    # 速度任务也作为独立项交给 RewardManager 累加。
-    cfg.rewards["track_linear_velocity"].weight = 2.0
-    cfg.rewards["track_angular_velocity"].weight = 2.0
+    # 速度任务已在 base_env_cfg 中拆成 vx、vy、yaw 三个独立项。
   # 官方 WTW 训练没有正向 default-pose 奖励；该项会把腿锁在默认
   # 姿态附近，和摆动/支撑行为目标竞争，容易形成高速小碎步。
   cfg.rewards["pose"].weight = 0.0 if enable_wtw else 1.0
@@ -207,7 +211,9 @@ def Nazarite_Velocity_Flat_Go2(
   # dominated the positive tracking rewards during early exploration.
   cfg.rewards["dof_pos_limits"].weight = -0.2
   cfg.rewards["joint_acc_l2"].weight = -2.5e-7
-  cfg.rewards["action_rate_l2"].weight = -0.005
+  # Match both reference Go2 Trot configurations.
+  cfg.rewards["action_rate_l2"].weight = -0.01
+  cfg.rewards["action_acc_l2"].weight = -0.005
   if not enable_wtw:
     cfg.rewards["air_time"].weight = 0.15
   cfg.rewards["soft_landing"].weight = -1.0e-5
@@ -270,11 +276,9 @@ def Nazarite_Velocity_Flat_Go2(
     if not enable_wtw:
       cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
-  elif enable_wtw:
-    # 官方 WTW 的训练脚本关闭随机推力。Pronking 需要先学会四腿同步
-    # 支撑/腾空，若训练初期加入推力，策略容易退化为更稳的对角支撑。
-    # 只在训练阶段移除该事件，play 阶段仍保留上面的随机推力测试。
-    cfg.events.pop("push_robot", None)
+  # WTW 训练也保留随机推力，使策略在课程学习速度和步态时同时获得
+  # 外部扰动鲁棒性。推力范围和 1--3 s 间隔由 base_env_cfg.py 的
+  # ``push_robot`` 事件统一定义。
 
   return cfg
 

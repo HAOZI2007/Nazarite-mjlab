@@ -284,6 +284,51 @@ def track_linear_velocity(
   reward = torch.exp(-(xy_error + z_error) / _safe_std(std) ** 2)
   return _safe_tensor(reward, limit=1.0)
 
+
+def track_velocity_x(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Track the commanded forward/backward velocity independently."""
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+  actual = safe_base_lin_vel(env, asset_cfg)
+  error = torch.square(command[:, 0] - actual[:, 0])
+  return _safe_tensor(torch.exp(-error / _safe_std(std) ** 2), limit=1.0)
+
+
+def track_velocity_y(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Track the commanded lateral velocity independently."""
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+  actual = safe_base_lin_vel(env, asset_cfg)
+  error = torch.square(command[:, 1] - actual[:, 1])
+  return _safe_tensor(torch.exp(-error / _safe_std(std) ** 2), limit=1.0)
+
+
+def track_yaw_velocity(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Track commanded yaw rate independently from roll/pitch stabilization."""
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+  actual = safe_base_ang_vel(env, asset_cfg)
+  error = torch.square(command[:, 2] - actual[:, 2])
+  return _safe_tensor(torch.exp(-error / _safe_std(std) ** 2), limit=1.0)
+
 # 角度 (自转) 追踪奖励计算函数
 def track_angular_velocity(
   env: ManagerBasedRlEnv,

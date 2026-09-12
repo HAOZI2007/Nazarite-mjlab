@@ -24,7 +24,10 @@ from typing import Any
 
 import mujoco
 import numpy as np
+
 from nazarite.config.robot_config.go2_cfg import (
+  ARMATURE_CALF,
+  ARMATURE_HIP,
   DAMPING_CALF,
   DAMPING_HIP,
   GO2_ACTION_SCALE,
@@ -34,8 +37,6 @@ from nazarite.config.robot_config.go2_cfg import (
   GO2_HIP_ACTUATOR_CFG,
   STIFFNESS_CALF,
   STIFFNESS_HIP,
-  ARMATURE_CALF,
-  ARMATURE_HIP,
 )
 
 try:
@@ -89,6 +90,20 @@ def _load_reference(input_path: Path) -> dict[str, np.ndarray]:
       reference["foot_target_world_m"] - reference["root_pos_mujoco"][:, None, :]
     ) @ root_rotation
   return reference
+
+
+def _initial_reference_velocity(model: mujoco.MjModel, reference: dict[str, np.ndarray]) -> np.ndarray:
+  """Estimate qvel at the first frame using MuJoCo's manifold-aware helper."""
+  qvel = np.zeros(model.nv, dtype=np.float64)
+  reference_fps = float(np.asarray(reference["fps"]).item())
+  mujoco.mj_differentiatePos(
+    model,
+    qvel,
+    1.0 / reference_fps,
+    reference["qpos"][0],
+    reference["qpos"][1],
+  )
+  return qvel
 
 
 def _add_nazarite_position_actuator(
@@ -196,6 +211,35 @@ def _actuator_action_parameters(model: mujoco.MjModel) -> tuple[np.ndarray, np.n
   return np.asarray(defaults), np.asarray(scales)
 
 
+def _actuator_delay_parameters(
+  model: mujoco.MjModel,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Return per-actuator delay bounds and fused delay-group identifiers.
+
+  mjlab fuses position actuators with the same delay configuration.  The
+  current Go2 config therefore has one shared random lag for hip/thigh and
+  another shared lag for calf at each physics step, rather than one lag per
+  motor.
+  """
+  min_lags: list[int] = []
+  max_lags: list[int] = []
+  group_ids: list[int] = []
+  for actuator_id in range(model.nu):
+    joint_id = int(model.actuator_trnid[actuator_id, 0])
+    joint_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+    if joint_name is None:
+      raise ValueError("Go2 actuator has no transmission joint name")
+    cfg = GO2_CALF_ACTUATOR_CFG if joint_name.endswith("_calf_joint") else GO2_HIP_ACTUATOR_CFG
+    min_lags.append(int(cfg.delay_min_lag))
+    max_lags.append(int(cfg.delay_max_lag))
+    group_ids.append(1 if joint_name.endswith("_calf_joint") else 0)
+  return (
+    np.asarray(min_lags, dtype=np.int64),
+    np.asarray(max_lags, dtype=np.int64),
+    np.asarray(group_ids, dtype=np.int64),
+  )
+
+
 def _reference_state(
   reference_qpos: np.ndarray,
   reference_fps: float,
@@ -243,6 +287,11 @@ def track_reference(
   min_up_dot: float,
   max_joint_error: float,
   control_decimation: int,
+  delay_min_lags: np.ndarray | None = None,
+  delay_max_lags: np.ndarray | None = None,
+  delay_group_ids: np.ndarray | None = None,
+  delay_seed: int = 0,
+  initialize_reference_velocity: bool = False,
 ) -> dict[str, np.ndarray]:
   """Simulate the whole reference and return actual states and filter signals."""
   if reference["qpos"].shape[1] != model.nq:
@@ -264,7 +313,11 @@ def track_reference(
 
   data = mujoco.MjData(model)
   data.qpos[:] = reference["qpos"][0]
-  data.qvel[:] = 0.0
+  data.qvel[:] = (
+    _initial_reference_velocity(model, reference)
+    if initialize_reference_velocity
+    else 0.0
+  )
   mujoco.mj_forward(model, data)
   time_step = model.opt.timestep
   step_count = int(np.ceil(duration_s / time_step)) + 1
@@ -282,8 +335,25 @@ def track_reference(
   foot_target_error = np.empty((step_count, 4), dtype=np.float64)
   foot_contacts = np.empty((step_count, 4), dtype=bool)
   equivalent_action = np.empty((step_count, model.nu), dtype=np.float64)
+  applied_position_target = np.empty((step_count, model.nu), dtype=np.float64)
+  delay_lag = np.zeros((step_count, model.nu), dtype=np.int64)
   valid = np.empty(step_count, dtype=bool)
   source_frame = np.empty(step_count, dtype=np.int64)
+
+  if delay_min_lags is None or delay_max_lags is None or delay_group_ids is None:
+    delay_min_lags = np.zeros(model.nu, dtype=np.int64)
+    delay_max_lags = np.zeros(model.nu, dtype=np.int64)
+    delay_group_ids = np.arange(model.nu, dtype=np.int64)
+  if not (
+    delay_min_lags.shape == (model.nu,)
+    and delay_max_lags.shape == (model.nu,)
+    and delay_group_ids.shape == (model.nu,)
+  ):
+    raise ValueError("delay parameter arrays must have shape [model.nu]")
+  if np.any(delay_min_lags < 0) or np.any(delay_max_lags < delay_min_lags):
+    raise ValueError("invalid actuator delay bounds")
+  delay_rng = np.random.default_rng(delay_seed)
+  command_history: list[np.ndarray] = []
 
   desired_q, reference_index = _reference_state(
     reference["qpos"], reference_fps, qpos_addresses, 0.0
@@ -299,7 +369,21 @@ def track_reference(
         reference["qpos"], reference_fps, qpos_addresses, control_time
       )
     actual_q = data.qpos[qpos_addresses]
-    data.ctrl[:] = desired_q
+    command_history.append(desired_q.copy())
+    applied_q = desired_q.copy()
+    for group_id in np.unique(delay_group_ids):
+      actuator_mask = delay_group_ids == group_id
+      min_lag = int(delay_min_lags[actuator_mask][0])
+      max_lag = int(delay_max_lags[actuator_mask][0])
+      if not np.all(delay_min_lags[actuator_mask] == min_lag) or not np.all(
+        delay_max_lags[actuator_mask] == max_lag
+      ):
+        raise ValueError("actuators in one delay group must share delay bounds")
+      lag = int(delay_rng.integers(min_lag, max_lag + 1))
+      history_index = max(0, len(command_history) - 1 - lag)
+      applied_q[actuator_mask] = command_history[history_index][actuator_mask]
+      delay_lag[step_index, actuator_mask] = lag
+    data.ctrl[:] = applied_q
     mujoco.mj_forward(model, data)
 
     base_rotation = data.xmat[base_id].reshape(3, 3)
@@ -326,6 +410,7 @@ def track_reference(
     ctrl_position_target[step_index] = data.ctrl
     actuator_force[step_index] = data.actuator_force
     desired_joint_position[step_index] = desired_q
+    applied_position_target[step_index] = applied_q
     joint_error[step_index] = current_joint_error
     base_position[step_index] = data.xpos[base_id]
     base_up_dot[step_index] = base_up
@@ -346,6 +431,7 @@ def track_reference(
     "ctrl_position_target": ctrl_position_target,
     "actuator_force": actuator_force,
     "reference_joint_position": desired_joint_position,
+    "applied_position_target": applied_position_target,
     "joint_error_rad": joint_error,
     "root_pos_mujoco": base_position,
     "base_up_dot": base_up_dot,
@@ -354,6 +440,7 @@ def track_reference(
     "foot_target_error_m": foot_target_error,
     "foot_ground_contact": foot_contacts,
     "equivalent_action": equivalent_action,
+    "actuator_delay_lag": delay_lag,
     "physics_valid": valid,
     "source_reference_frame": source_frame,
     "fps": np.asarray(1.0 / time_step, dtype=np.float64),
@@ -425,6 +512,18 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     help="Policy-to-simulation decimation; 10 matches SMP teacher env",
   )
   parser.add_argument(
+    "--delay-seed", type=int, default=0,
+    help="Seed for reproducing the stochastic go2_cfg actuator delay",
+  )
+  parser.add_argument(
+    "--ignore-actuator-delay", action="store_true",
+    help="Disable go2_cfg delay for an isolated no-delay comparison",
+  )
+  parser.add_argument(
+    "--initialize-reference-velocity", action="store_true",
+    help="Initialize qvel from the first two reference frames instead of zero",
+  )
+  parser.add_argument(
     "--max-action-saturation-fraction", type=float, default=1.0,
     help="Diagnostic threshold only; current smp RL config has clip_actions=None",
   )
@@ -456,6 +555,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
   reference = _load_reference(input_path)
   model = _model_with_ground(xml_path, args.kp_scale, args.kd_scale)
+  delay_min_lags, delay_max_lags, delay_group_ids = _actuator_delay_parameters(model)
+  if args.ignore_actuator_delay:
+    delay_min_lags = np.zeros_like(delay_min_lags)
+    delay_max_lags = np.zeros_like(delay_max_lags)
   rollout = track_reference(
     model=model,
     reference=reference,
@@ -463,6 +566,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     min_up_dot=args.min_up_dot,
     max_joint_error=args.max_joint_error_rad,
     control_decimation=args.control_decimation,
+    delay_min_lags=delay_min_lags,
+    delay_max_lags=delay_max_lags,
+    delay_group_ids=delay_group_ids,
+    delay_seed=args.delay_seed,
+    initialize_reference_velocity=args.initialize_reference_velocity,
   )
   physics_fps = float(np.asarray(rollout["fps"]).item())
   min_run_frames = int(np.ceil(args.min_success_duration_s * physics_fps))
@@ -486,7 +594,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "nominal_damping": DAMPING_HIP,
         "stiffness": float(GO2_HIP_ACTUATOR_CFG.stiffness) * args.kp_scale,
         "damping": float(GO2_HIP_ACTUATOR_CFG.damping) * args.kd_scale,
-        "effort_limit": 23.7,
+        "effort_limit": float(GO2_HIP_ACTUATOR_CFG.effort_limit),
         "armature": ARMATURE_HIP,
       },
       "calf": {
@@ -494,10 +602,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         "nominal_damping": DAMPING_CALF,
         "stiffness": float(GO2_CALF_ACTUATOR_CFG.stiffness) * args.kp_scale,
         "damping": float(GO2_CALF_ACTUATOR_CFG.damping) * args.kd_scale,
-        "effort_limit": 35.55,
+        "effort_limit": float(GO2_CALF_ACTUATOR_CFG.effort_limit),
         "armature": ARMATURE_CALF,
       },
       "action_scale": {str(key): float(value) for key, value in GO2_ACTION_SCALE.items()},
+      "delay": {
+        "enabled": not args.ignore_actuator_delay,
+        "seed": args.delay_seed,
+        "hip_thigh_min_lag_physics_steps": int(delay_min_lags[0]),
+        "hip_thigh_max_lag_physics_steps": int(delay_max_lags[0]),
+        "calf_min_lag_physics_steps": int(delay_min_lags[np.flatnonzero(delay_group_ids == 1)[0]]),
+        "calf_max_lag_physics_steps": int(delay_max_lags[np.flatnonzero(delay_group_ids == 1)[0]]),
+      },
       "go2_cfg_kp_scale": GO2_ACTUATOR_KP_SCALE,
       "go2_cfg_kd_scale": GO2_ACTUATOR_KD_SCALE,
       "additional_kp_scale": args.kp_scale,
@@ -515,6 +631,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     ),
     "kp_scale": args.kp_scale,
     "kd_scale": args.kd_scale,
+    "delay_enabled": not args.ignore_actuator_delay,
+    "initial_velocity_mode": (
+      "reference_finite_difference"
+      if args.initialize_reference_velocity
+      else "zero"
+    ),
     "validity_thresholds": {
       "min_base_height_m": args.min_base_height,
       "min_up_dot": args.min_up_dot,

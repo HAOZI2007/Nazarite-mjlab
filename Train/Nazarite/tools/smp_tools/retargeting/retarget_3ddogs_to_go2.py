@@ -36,15 +36,27 @@ if TYPE_CHECKING:
     _set_nazarite_default_pose,
   )
 else:
-  from inspect_go2_kinematics import (
-    DEFAULT_GO2_XML,
-    NAZARITE_BASE_POS,
-    NAZARITE_JOINT_POS,
-    SMP_LEG_ORDER,
-    _joint_names,
-    _object_id,
-    _set_nazarite_default_pose,
-  )
+  try:
+    from tools.smp_tools.retargeting.inspect_go2_kinematics import (
+      DEFAULT_GO2_XML,
+      NAZARITE_BASE_POS,
+      NAZARITE_JOINT_POS,
+      SMP_LEG_ORDER,
+      _joint_names,
+      _object_id,
+      _set_nazarite_default_pose,
+    )
+  except ModuleNotFoundError:
+    # Keep direct execution from this directory working as well.
+    from inspect_go2_kinematics import (
+      DEFAULT_GO2_XML,
+      NAZARITE_BASE_POS,
+      NAZARITE_JOINT_POS,
+      SMP_LEG_ORDER,
+      _joint_names,
+      _object_id,
+      _set_nazarite_default_pose,
+    )
 
 
 def _normalize(vectors: np.ndarray) -> np.ndarray:
@@ -286,9 +298,25 @@ def _retarget_targets(
   root_quaternion = np.stack(
     [_matrix_to_quaternion_wxyz(rotation) for rotation in rotations_go2]
   )
-  # R0 is world-from-initial-body.  For row vectors, multiplying by R0 gives
-  # coordinates in the initial body frame, matching rotations_go2 at t=0.
-  root_delta_initial_body = (root_position - root_position[0]) @ rotations_dog[0]
+  # Use a level initial frame for root translation.  The mocap root quaternion
+  # can contain a small static roll/pitch bias (a few degrees).  Projecting a
+  # long forward displacement through that tilted frame creates a false
+  # vertical drift: e.g. a 7 m walk can turn a 4-degree pitch bias into roughly
+  # half a metre of artificial root-height change.  The source z coordinate is
+  # already expressed in the MuJoCo z-up world frame, so preserve it directly;
+  # only x/y are expressed in the level initial heading frame.
+  initial_forward = rotations_dog[0, :, 0].copy()
+  initial_forward[2] = 0.0
+  forward_norm = np.linalg.norm(initial_forward)
+  if forward_norm <= 1.0e-8:
+    raise ValueError("initial root forward direction has no horizontal component")
+  initial_forward /= forward_norm
+  initial_left = np.array((-initial_forward[1], initial_forward[0], 0.0))
+  initial_level_rotation = np.stack(
+    (initial_forward, initial_left, np.array((0.0, 0.0, 1.0))), axis=1
+  )
+  root_delta_world = root_position - root_position[0]
+  root_delta_initial_body = root_delta_world @ initial_level_rotation
   target_root_position = NAZARITE_BASE_POS + motion_scale * root_delta_initial_body
   paws_relative_body = np.einsum(
     "tji,tlj->tli", rotations_dog, motion["paw_pos_mujoco"] - root_position[:, None]

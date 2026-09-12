@@ -29,33 +29,38 @@ def _make_wtw_velocity_command() -> GridAdaptiveVelocityCommandCfg:
   """创建当前 Trot 课程使用的最终 Grid 配置。"""
   return GridAdaptiveVelocityCommandCfg(
     entity_name="robot",
-    resampling_time_range=(10.0, 10.0),
-    rel_standing_envs=0.0,
+    resampling_time_range=(10.0, 20.0),
+    rel_standing_envs=0.2,
     rel_heading_envs=0.0,
     rel_forward_envs=0.0,
     heading_command=False,
-    # 当前阶段同时覆盖倒退、低速和前进；strict frontier 保证逐格验证。
-    grid_num_x=3,
-    grid_num_yaw=1,
-    initial_cell=(1, 0),
-    min_cell_visits=8192,
-    success_window_size=8192,
+    # 当前阶段覆盖倒退、高速前进、横移和转向；strict frontier 保证逐格验证。
+    # 将 x 与 yaw 都按五档从零速度向外扩展；横移速度在每个 cell 内独立
+    # 采样。相比原来的 3 x 1 网格，这能避免全范围转向在首个 cell 中被
+    # 一次性引入，同时保留高速前进/倒退的渐进课程。
+    grid_num_x=5,
+    grid_num_yaw=5,
+    initial_cell=(3, 3),
+    # 25 个严格 frontier cell 使用 4096 个命令段即可完成一轮可靠验证；
+    # 保留旧的 8192 会使课程扩展不必要地缓慢。
+    min_cell_visits=2048,
+    success_window_size=2048,
     max_new_cells_per_update=1,
     require_all_active_cells_ready=True,
-    success_rate_threshold=0.8,
+    success_rate_threshold=0.6,
     velocity_error_threshold=0.25,
-    yaw_error_threshold=0.10,
+    yaw_error_threshold=0.20,
     gait_quality_behavior_command_name="behavior",
     gait_quality_sensor_name="feet_ground_contact",
-    gait_schedule_error_threshold=0.16,
+    gait_schedule_error_threshold=0.30,
     gait_sync_error_threshold=0.08,
     gait_mixed_contact_threshold=0.12,
     gait_contact_smoothing=0.07,
     debug_vis=True,
     ranges=GridAdaptiveVelocityCommandCfg.Ranges(
       lin_vel_x=(-1.0, 1.0),
-      lin_vel_y=(0.0, 0.0),
-      ang_vel_z=(0.0, 0.0),
+      lin_vel_y=(-0.5, 0.5),
+      ang_vel_z=(-1.0, 1.0),
       heading=None,
     ),
   )
@@ -75,7 +80,7 @@ def _make_wtw_behavior_command() -> WTWBehaviorCommandCfg:
     stance_width_range=(0.25, 0.25),
     foot_swing_height_range=(0.06, 0.06),
     duty_factor=0.5,
-    gait_names=("pronking",),
+    gait_names=("trot",),
     # reset 从支撑相开始，避免随机初相位与初始站姿冲突。
     randomize_initial_phase=False,
     debug_vis=False,
@@ -225,6 +230,39 @@ def _configure_wtw_rewards(rewards: dict[str, RewardTermCfg]) -> None:
   """将通用奖励转换为 WTW 的 phase-conditioned 奖励组合。"""
   for reward_name in ("air_time", "prolonged_air_time", "stance_contact"):
     rewards.pop(reward_name)
+  # Separate forward, lateral, and yaw tracking so one large command axis
+  # cannot hide a systematic error on another axis.
+  rewards.pop("track_linear_velocity", None)
+  rewards.pop("track_angular_velocity", None)
+  rewards.update({
+    "track_velocity_x": RewardTermCfg(
+      func=custom_rewards.track_velocity_x,
+      weight=1.0,
+      params={
+        "command_name": "twist",
+        "std": math.sqrt(0.25),
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
+    "track_velocity_y": RewardTermCfg(
+      func=custom_rewards.track_velocity_y,
+      weight=1.0,
+      params={
+        "command_name": "twist",
+        "std": math.sqrt(0.25),
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
+    "track_yaw_velocity": RewardTermCfg(
+      func=custom_rewards.track_yaw_velocity,
+      weight=2.0,
+      params={
+        "command_name": "twist",
+        "std": math.sqrt(0.5),
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
+  })
   rewards.update(_make_wtw_rewards())
 
 
@@ -288,8 +326,18 @@ def make_base_env_cfg(
     actor_terms.pop("behavior")
     actor_terms.pop("phase")
 
+  # Match the reference Trot's 1--3 policy-step motor and IMU observation
+  # latency. Only the actor is delayed; the critic retains privileged/current
+  # state information.
+  for term_name in ("base_ang_vel", "projected_gravity", "joint_pos", "joint_vel"):
+    actor_terms[term_name].delay_min_lag = 1
+    actor_terms[term_name].delay_max_lag = 3
+
   # 深拷贝，避免后面给 critic 设置 3 帧历史时修改 actor 的配置对象。
   critic_terms = deepcopy(actor_terms)
+  for term in critic_terms.values():
+    term.delay_min_lag = 0
+    term.delay_max_lag = 0
   critic_terms.update({
     # Critic sees the true (unbiased) joint positions as privileged information.
     "joint_pos": ObservationTermCfg(func=mdp.joint_pos_rel),
@@ -478,6 +526,35 @@ def make_base_env_cfg(
         },
       },
     ),
+    # Match the reference Go2 Trot dynamics randomization.
+    "base_mass": EventTermCfg(
+      mode="startup",
+      func=dr.body_mass,
+      params={
+        "operation": "add",
+        "ranges": (-1.0, 2.0),
+        "asset_cfg": SceneEntityCfg("robot", body_names=()),
+      },
+    ),
+    "link_mass": EventTermCfg(
+      mode="startup",
+      func=dr.body_mass,
+      params={
+        "operation": "scale",
+        "ranges": (0.9, 1.1),
+        "asset_cfg": SceneEntityCfg("robot", body_names=()),
+      },
+    ),
+    "pd_gains": EventTermCfg(
+      mode="startup",
+      func=dr.pd_gains,
+      params={
+        "operation": "scale",
+        "kp_range": (0.9, 1.1),
+        "kd_range": (0.9, 1.1),
+        "asset_cfg": SceneEntityCfg("robot", actuator_names=".*"),
+      },
+    ),
   }
 
   ##
@@ -497,6 +574,36 @@ def make_base_env_cfg(
     "track_angular_velocity": RewardTermCfg(
       func=custom_rewards.track_angular_velocity,
       weight=2.0,
+      params={
+        "command_name": "twist",
+        "std": math.sqrt(0.5),
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
+    # WTW replaces the combined xy/yaw terms with independent directional
+    # tracking terms in _configure_wtw_rewards(). Keep these disabled in the
+    # baseline configuration.
+    "track_velocity_x": RewardTermCfg(
+      func=custom_rewards.track_velocity_x,
+      weight=0.0,
+      params={
+        "command_name": "twist",
+        "std": math.sqrt(0.25),
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
+    "track_velocity_y": RewardTermCfg(
+      func=custom_rewards.track_velocity_y,
+      weight=0.0,
+      params={
+        "command_name": "twist",
+        "std": math.sqrt(0.25),
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
+    "track_yaw_velocity": RewardTermCfg(
+      func=custom_rewards.track_yaw_velocity,
+      weight=0.0,
       params={
         "command_name": "twist",
         "std": math.sqrt(0.5),
@@ -549,6 +656,10 @@ def make_base_env_cfg(
     "action_rate_l2": RewardTermCfg(
       func=custom_rewards.action_rate_l2,
       weight=-0.05,
+    ),
+    "action_acc_l2": RewardTermCfg(
+      func=mdp.action_acc_l2,
+      weight=0.0,
     ),
     "air_time": RewardTermCfg(
       func=custom_rewards.feet_air_time,

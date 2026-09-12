@@ -56,20 +56,17 @@ def get_spec() -> mujoco.MjSpec:
         spec.delete(act)
     return spec
 
-# 名义执行器参数。它们用于计算 action scale，并保持 action -> 目标位置
-# 的映射不变；实际训练执行器会再乘下面的独立增益倍率。
-STIFFNESS_HIP = 15.89524265323492
-DAMPING_HIP = 1.0119225759919113
+# 参考 Go2 Trot 使用统一的理想 P 执行器参数。
+STIFFNESS_HIP = 20.0
+DAMPING_HIP = 0.5
 ARMATURE_HIP = 0.004026312
-STIFFNESS_CALF = 35.76429596977857
-DAMPING_CALF = 2.2768257959818006
+STIFFNESS_CALF = 20.0
+DAMPING_CALF = 0.5
 ARMATURE_CALF = 0.009059202
 
-# SMP 教师使用的实际 PD 增益倍率。
-# 保持 GO2_ACTION_SCALE 基于上面的名义 Kp 计算，因而不会改变策略动作
-# 到关节目标位置的映射；这里只提高执行器对同一目标位置的响应能力。
-GO2_ACTUATOR_KP_SCALE = 2.0
-GO2_ACTUATOR_KD_SCALE = 2.0
+# 参考仓库没有额外的 ×2 增益。
+GO2_ACTUATOR_KP_SCALE = 1.0
+GO2_ACTUATOR_KD_SCALE = 1.0
 
 # 腿部执行器配置.
 GO2_HIP_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
@@ -78,24 +75,34 @@ GO2_HIP_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
     damping=DAMPING_HIP * GO2_ACTUATOR_KD_SCALE,
     effort_limit=23.7,
     armature=ARMATURE_HIP,
+    # Sample action latency once per 0.02 s control cycle. Keep that latency
+    # fixed throughout the ten 0.002 s physics substeps of the cycle.
+    delay_min_lag=0,
+    delay_max_lag=9,
+    delay_update_period=10,
+    delay_per_env_phase=False,
 )
 GO2_CALF_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
     target_names_expr=GO2_CALF_JOINT_PATTERNS,
     stiffness=STIFFNESS_CALF * GO2_ACTUATOR_KP_SCALE,
     damping=DAMPING_CALF * GO2_ACTUATOR_KD_SCALE,
-    effort_limit=35.55,
+    effort_limit=45.43,
     armature=ARMATURE_CALF,
+    delay_min_lag=0,
+    delay_max_lag=9,
+    delay_update_period=10,
+    delay_per_env_phase=False,
 )
 ARTICULATION_CFG = EntityArticulationInfoCfg(
     actuators=(GO2_HIP_ACTUATOR_CFG, GO2_CALF_ACTUATOR_CFG),
     soft_joint_pos_limit_factor=0.95,
 )
 
-# 按执行器分组的 action scale, 与 mjlab Go2 保持一致.
+# 参考仓库使用 target_q = action * 0.25 + default_q，所有关节统一缩放。
 GO2_ACTION_SCALE = {
-    r".*_hip_joint": 0.25 * 23.7 / STIFFNESS_HIP,
-    r".*_thigh_joint": 0.25 * 23.7 / STIFFNESS_HIP,
-    r".*_calf_joint": 0.25 * 35.55 / STIFFNESS_CALF,
+    r".*_hip_joint": 0.25,
+    r".*_thigh_joint": 0.25,
+    r".*_calf_joint": 0.25,
 }
 
 # Go2 的初始姿态.
