@@ -1584,6 +1584,7 @@ name = "nazarite-training"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "evdev", marker = "sys_platform == 'linux'" },
     { name = "mjlab", extra = ["cu128"] },
     { name = "pynput" },
 ]
@@ -1597,6 +1598,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "evdev", marker = "sys_platform == 'linux'", specifier = ">=1.9.2" },
     { name = "mjlab", extras = ["cu128"], editable = "mjlab" },
     { name = "pynput", specifier = ">=1.8.2" },
 ]

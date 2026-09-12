@@ -10,6 +10,10 @@
 
 ```text
 tools/smp_tools/
+├── kine2go/
+│   ├── inspect_kine2go.py       # Kine2Go 格式、关节顺序、速度和 Go2 FK/GIF 验收
+│   ├── adapt_kine2go_to_go2.py  # 裁掉落地瞬态并适配 Nazarite Go2 几何/FK
+│   └── prepare_kine2go_reference.py # 1x 平滑、末尾碰撞裁剪和物理跟踪准备
 ├── video/
 │   ├── infer_dog_pose.py         # 解码视频并调用外部 GQMR 姿态插件
 │   └── convert_dlc_to_gqmr.py    # DLC CSV → GQMR dog-27 2D JSON/NPZ
@@ -43,6 +47,48 @@ tools/smp_tools/
 │   └── export_teacher_rollouts.py # 从教师 checkpoint 导出物理可执行轨迹
 └── README.md
 ```
+
+## Kine2Go 单片段验收
+
+Kine2Go 数据先保存在 Git 忽略的 `tools/smp_dataset/kine2go/raw/`，不要直接写入
+现有 SMP motion windows。第一步运行只读验收：
+
+```bash
+uv run python tools/smp_tools/kine2go/inspect_kine2go.py \
+  --input-dir tools/smp_dataset/kine2go/raw/data/solo8_crawl_slow \
+  --output-dir output/kine2go_inspect/solo8_crawl_slow
+```
+
+工具会从位置和四元数重建速度，比较 Kine2Go 文档关节顺序与 Genesis 实际
+分组顺序，并通过 Nazarite Go2 MuJoCo 模型做 FK 和 GIF 回放。它只向
+`output/kine2go_inspect/<clip>/` 写入 `summary.json`、
+`reconstructed_motion.npz`、`trajectories.png` 和
+`kinematic_replay.gif`；不会修改原始 `motion.npy`。
+
+验收后再将重建结果适配到 Nazarite 使用的 Go2 MuJoCo 几何：
+
+```bash
+uv run python tools/smp_tools/kine2go/adapt_kine2go_to_go2.py \
+  --input output/kine2go_inspect/solo8_crawl_slow/reconstructed_motion.npz \
+  --output-dir output/kine2go_adapted/solo8_crawl_slow
+```
+
+这一步会自动识别并裁掉片段开头的悬空落地段，平移水平起点，并用一个统一
+的竖直偏移消除 Nazarite MuJoCo 足端穿地；不会逐帧改变基座高度。输出的
+`go2_reference_geometric.npz` 可直接交给现有 replay、quality、preprocessing
+和 physics 工具继续验收。
+
+保持 1 倍速做轻度平滑、重新估计 Nazarite FK 接触并裁掉末尾碰撞：
+
+```bash
+uv run python tools/smp_tools/kine2go/prepare_kine2go_reference.py \
+  --input output/kine2go_adapted/solo8_crawl_slow/go2_reference_geometric.npz \
+  --output-dir output/kine2go_prepared/solo8_crawl_slow
+```
+
+默认使用 5 帧对称三角窗口，不改变 FPS 或播放时长。输出
+`go2_reference_prepared.npz` 后，再用 `physics/track_go2_reference_physics.py`
+按 `go2_cfg.py` 的实际执行器和 action scale 做动力学验收。
 
 ## GQMR 视频姿态入口（第一阶段）
 

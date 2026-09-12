@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Nazarite robot reinforcement-learning tasks built on mjlab"
 requires-python = ">=3.10,<3.14"
 dependencies = [
+  "evdev>=1.9.2; sys_platform == 'linux'",
   "mjlab[cu128]",
   "pynput>=1.8.2",
 ]
