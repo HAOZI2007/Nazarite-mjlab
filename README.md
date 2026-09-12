@@ -6,6 +6,24 @@
 
 Nazarite东莞理工学院行者实验室 轮腿机器人 MuJoCo 强化学习与 sim-to-real 工程。
 
+## 项目当前状态
+
+当前开发主线是 Go2 平地速度控制和 FR-Net 摔倒恢复：
+
+- `Nazarite-Velocity-Flat-Go2`：Grid Adaptive 速度跟踪 baseline。
+- `Nazarite-Velocity-Flat-Go2-WTW`：Grid Adaptive + WTW Trot 行为控制。
+- `Nazarite-FRNet-Recovery-Go2`：平地摔倒恢复。
+- `Nazarite-FRNet-Recovery-Terrain-Go2`：复杂地形摔倒恢复。
+
+SMP（Score-Matching Motion Prior）相关代码和数据处理工具目前保留，但已
+**停止更新**。它们只用于保留已有实验、复现实验结果和查阅实现，不再作为
+后续功能开发、奖励调参或任务扩展的主线。除非为了复现旧实验，不建议继续
+运行 `Nazarite-SMP-Teacher-Go2`、`Nazarite-SMP-Forward-Go2` 或
+`smp-pretrain`。
+
+独立跳跃任务已经从当前项目中移除，历史跳跃日志和 checkpoint 仍保留在本地，
+但不再属于当前可注册、可训练任务。
+
 ## 当前目录
 
 ~~~text
@@ -15,6 +33,10 @@ Nazarite东莞理工学院行者实验室 轮腿机器人 MuJoCo 强化学习与
 │       ├── mjlab/                 # 通用 MuJoCo 强化学习基础库
 │       ├── .venv/                 # 当前已安装的 Python 环境
 │       ├── Nazarite-src/nazarite/ # 自定义训练包
+│       ├── tools/                 # SMP 等离线工具（SMP 已冻结）
+│       ├── sim2sim/               # 仿真到仿真的部署和检查脚本
+│       ├── logs/                  # 本地训练日志和 checkpoint
+│       ├── output/                # 本地数据处理产物
 │       ├── pyproject.toml         # 项目依赖和任务 entry point
 │       └── DEPENDENCIES.md        # 训练框架依赖说明
 ├── pyrightconfig.json             # 工作区级 Python 解析配置
@@ -24,15 +46,16 @@ Nazarite东莞理工学院行者实验室 轮腿机器人 MuJoCo 强化学习与
 
 训练项目说明见 [Train/Nazarite/README.md](Train/Nazarite/README.md)，详细依赖关系见 [Train/Nazarite/DEPENDENCIES.md](Train/Nazarite/DEPENDENCIES.md)。
 
-## 当前环境
+## 当前环境与检查
 
-当前使用的解释器是：
+推荐统一从 `Train/Nazarite` 目录执行 `uv run`，由项目配置管理运行环境。
+基础库检查从 `Train/Nazarite/mjlab` 执行：
 
 ~~~text
-Train/Nazarite/mjlab/.venv/bin/python
+uv run python
 ~~~
 
-该环境已经安装 mjlab 的主要依赖，包括 MuJoCo、PyTorch CUDA 12.8、tensordict、RSL-RL、Pyright 和 Ruff。
+项目依赖包括 MuJoCo、PyTorch、tensordict、RSL-RL、Pyright 和 Ruff。
 
 VS Code 工作区级配置位于：
 
@@ -41,26 +64,43 @@ VS Code 工作区级配置位于：
 
 ## 基础库检查
 
-从基础库目录执行：
-
 ~~~bash
 cd Train/Nazarite/mjlab
 uv sync
 uv run pyright -p pyproject.toml src/mjlab
 ~~~
 
-当前 mjlab 源码已通过 188 个文件的 import/type 检查。
+检查 Nazarite 自定义包：
+
+~~~bash
+cd Train/Nazarite
+uv run ruff check Nazarite-src/nazarite
+uv run pyright -p pyproject.toml Nazarite-src/nazarite
+~~~
 
 ## 当前可用任务
 
-项目当前提供两项 Go2 平地速度任务，二者都使用 Grid Adaptive 速度课程：
+任务由 `Nazarite-src/nazarite/__init__.py` 注册，并可通过 `list-envs` 查看。
 
-| 任务 ID | 用途 |
-|---|---|
-| `Nazarite-Velocity-Flat-Go2` | 不使用 WTW 的速度跟踪 baseline，用于 A/B 对照。 |
-| `Nazarite-Velocity-Flat-Go2-WTW` | WTW 条件策略：Trot 行为、phase 时序和独立行为辅助奖励。 |
+| 任务 ID | 状态 | 用途 |
+|---|---|---|
+| `Nazarite-Velocity-Flat-Go2` | 主线 | 不使用 WTW 的 Grid Adaptive 速度跟踪 baseline。 |
+| `Nazarite-Velocity-Flat-Go2-WTW` | 主线 | Grid Adaptive + WTW Trot、phase 观测和独立行为奖励。 |
+| `Nazarite-FRNet-Recovery-Go2` | 主线 | 平地随机摔倒状态恢复，使用 FR-Net 辅助监督。 |
+| `Nazarite-FRNet-Recovery-Terrain-Go2` | 主线 | 复杂地形随机摔倒状态恢复。 |
+| `Nazarite-SMP-Teacher-Go2` | 冻结 | SMP 参考动作物理闭环教师，仅用于旧实验复现。 |
+| `Nazarite-SMP-Forward-Go2` | 冻结 | 冻结 SMP prior + 前向速度任务，仅用于旧实验复现。 |
 
-WTW 当前默认训练阶段：速度范围 `[-1.0, 1.0] m/s`、3 个 x 方向 Grid cell、固定 Trot，频率在 `2.0–2.4 Hz` 小范围采样；横向和 yaw 指令固定为零。详情见 [WTW 从零实现说明](docs/WTW-从零手写Walk-These-Ways.md)。
+当前没有独立的跳跃任务。
+
+### WTW 当前默认配置
+
+WTW 当前采用 5×5 的 x/yaw Grid Adaptive 课程，速度范围为
+`lin_vel_x=(-1.0, 1.0) m/s`、`lin_vel_y=(-0.5, 0.5) m/s`、
+`ang_vel_z=(-1.0, 1.0) rad/s`。行为命令固定为 Trot，频率在 `2.0–3.0 Hz`
+内采样，body height、pitch、stance width 和摆腿高度当前固定。actor 普通本体
+观测使用 10 帧历史，critic 使用 3 帧；behavior 保留 5 帧，phase 的 sin/cos
+不使用历史堆叠。详情见 [WTW 从零实现说明](docs/WTW-从零手写Walk-These-Ways.md)。
 
 ~~~bash
 cd Train/Nazarite
@@ -71,6 +111,29 @@ uv run play Nazarite-Velocity-Flat-Go2-WTW \
 ~~~
 
 网页 play 的 `Commands` 区域同时提供速度控制器和 WTW `Behavior` 面板。打开 `Enable override` 后，可以实时修改当前选中环境的频率、机体高度偏移、pitch、步宽和摆腿高度；这仅用于验证 checkpoint，不会改变训练配置。
+
+### FR-Net 恢复任务
+
+~~~bash
+uv run train Nazarite-FRNet-Recovery-Go2
+uv run train Nazarite-FRNet-Recovery-Terrain-Go2
+uv run frnet-evaluate
+~~~
+
+FR-Net 复杂地形任务包含平地、台阶、低矮随机网格和散布箱体等地形。具体奖励、
+辅助监督和地形课程见 [FR-Net 在 Nazarite 中的复现实施文档](docs/FR-Net在Nazarite中的复现实施文档.md)。
+
+## SMP 冻结说明
+
+SMP 目录不会删除，原因是它包含已有的数据处理、Go2 重定向、motion prior、
+GSI 和参考教师实现，仍有复现实验价值。但从现在开始：
+
+- 不再增加新的 SMP 数据集、网络结构、奖励项或训练任务；
+- 不再继续修复 SMP 训练效果或围绕 SMP 做新的调参迭代；
+- 不把 SMP 任务作为 WTW、FR-Net 或后续主线任务的依赖；
+- SMP 模型、数据集和 `output/` 产物默认只视为本地实验资产，不提交到 Git。
+
+SMP 历史流程见 [Nazarite-SMP 全链路数据处理与训练指南](docs/Nazarite-SMP全链路数据处理与训练指南.md)。
 
 ## 引用区(本项目所参考使用的仓库)
 1. mjlab
