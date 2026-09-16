@@ -267,6 +267,7 @@ def safe_foot_contact_forces(
     return torch.zeros((env.num_envs, 0), dtype=torch.float32, device=env.device)
   return _safe_tensor(result, limit=100.0)
 
+
 #速度追踪奖励计算函数
 def track_linear_velocity(
   env: ManagerBasedRlEnv,
@@ -578,6 +579,49 @@ def feet_air_time(
     command = _safe_command(env, command_name)
     if command is not None:
       reward = reward * _command_is_active(command, command_threshold)
+  return _safe_tensor(reward, limit=_SAFE_REWARD_LIMIT)
+
+
+def feet_gait(
+  env: ManagerBasedRlEnv,
+  period: float,
+  offset: list[float],
+  threshold: float,
+  command_threshold: float,
+  command_name: str,
+  sensor_name: str,
+) -> torch.Tensor:
+  """Reward phase-consistent foot contacts (HIMLoco-style).
+
+  ``offset`` specifies the phase of each leg in cycles.  A foot is expected
+  to be in contact during the first ``threshold`` fraction of its phase.
+  The term is disabled for near-zero velocity commands.
+  """
+  sensor = _get_contact_sensor(env, sensor_name)
+  if sensor is None or sensor.data.current_contact_time is None:
+    return _zero_reward(env)
+  period_steps = max(int(round(period / env.step_dt)), 1)
+  phase = ((env.episode_length_buf % period_steps) / period_steps).unsqueeze(1)
+  offsets = torch.as_tensor(offset, device=env.device, dtype=phase.dtype).flatten()
+  num_feet = sensor.data.current_contact_time.shape[1]
+  if offsets.numel() == 1:
+    offsets = offsets.repeat(num_feet)
+  elif offsets.numel() == 2 and num_feet == 4:
+    # Reference HIMLoco specifies one phase per diagonal leg pair. Nazarite's
+    # contact sensor order is FL, FR, RL, RR, so the trot mapping is diagonal.
+    offsets = torch.stack((offsets[0], offsets[1], offsets[1], offsets[0]))
+  elif offsets.numel() != num_feet:
+    raise ValueError(
+      f"feet_gait offset has {offsets.numel()} entries, but contact sensor has "
+      f"{num_feet} feet; provide one offset per foot or a single/2-entry gait pattern."
+    )
+  offsets = offsets.view(1, -1)
+  desired_contact = ((phase + offsets) % 1.0) < threshold
+  contact = sensor.data.current_contact_time > 0
+  reward = (desired_contact == contact).float().mean(dim=1)
+  command = _safe_command(env, command_name)
+  if command is not None:
+    reward *= _command_is_active(command, command_threshold)
   return _safe_tensor(reward, limit=_SAFE_REWARD_LIMIT)
 
 #脚部腾空超时惩罚

@@ -8,9 +8,12 @@
 from .cnn_model import CNNModel
 from .mlp_model import MLPModel
 from .rnn_model import RNNModel
+from .him_actor_model import HIMActorModel, HIMActorCritic
 
 __all__ = [
     "CNNModel",
     "MLPModel",
     "RNNModel",
+    "HIMActorModel",
+    "HIMActorCritic",
 ]

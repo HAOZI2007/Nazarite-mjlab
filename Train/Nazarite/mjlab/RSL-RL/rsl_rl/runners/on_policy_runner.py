@@ -29,6 +29,12 @@ class OnPolicyRunner:
         self.cfg = train_cfg
         self.device = device
 
+        # Older/project-level runner dataclasses omit optional RND settings,
+        # while Logger and the rollout loop use the key as a feature flag.
+        # Normalize the config before constructing either component.
+        self.cfg.setdefault("algorithm", {})
+        self.cfg["algorithm"].setdefault("rnd_cfg", None)
+
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
 

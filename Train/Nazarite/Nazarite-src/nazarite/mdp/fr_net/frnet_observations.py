@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.managers.observation_manager import ObservationTermCfg
-from mjlab.sensor import ContactSensor
+from mjlab.sensor import ContactSensor, TerrainHeightSensor
 from mjlab.tasks.velocity import mdp
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from nazarite.mdp import rewards as custom_rewards
@@ -133,6 +133,34 @@ def frnet_aux_targets(env: ManagerBasedRlEnv) -> torch.Tensor:
   return torch.cat((frnet_mass_target(env), frnet_contact_target(env)), dim=-1)
 
 
+def frnet_privileged_height_map(
+  env: ManagerBasedRlEnv,
+  sensor_name: str = "frnet_terrain_height_map",
+  clip_range: tuple[float, float] = (-1.0, 1.0),
+) -> torch.Tensor:
+  """Return a clipped local terrain height map for the asymmetric critic.
+
+  The map is privileged information: the actor still has to infer terrain
+  support through the MCP contact history, while the critic receives a lower
+  variance value target on stairs and scattered boxes.  Heights are measured
+  relative to the base frame by ``TerrainHeightSensor`` and flattened in a
+  stable ray order.
+  """
+  sensor = env.scene[sensor_name]
+  if not isinstance(sensor, TerrainHeightSensor):
+    raise TypeError(f"Expected TerrainHeightSensor for '{sensor_name}'")
+  heights = sensor.data.heights
+  if heights.ndim not in (2, 3) or heights.shape[0] != env.num_envs:
+    raise RuntimeError(
+      f"'{sensor_name}' returned invalid height shape {tuple(heights.shape)}"
+    )
+  low, high = clip_range
+  if low >= high:
+    raise ValueError("clip_range must be increasing")
+  heights = torch.nan_to_num(heights, nan=high).clamp(min=low, max=high)
+  return heights.flatten(start_dim=1)
+
+
 def make_frnet_observation_terms() -> tuple[
   dict[str, ObservationTermCfg],
   dict[str, ObservationTermCfg],
@@ -210,6 +238,11 @@ def make_frnet_observation_terms() -> tuple[
       ),
       "frnet_contact_target": ObservationTermCfg(
         func=frnet_contact_target,
+        history_length=1,
+      ),
+      "frnet_terrain_height_map": ObservationTermCfg(
+        func=frnet_privileged_height_map,
+        params={"sensor_name": "frnet_terrain_height_map"},
         history_length=1,
       ),
     }

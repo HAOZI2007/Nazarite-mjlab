@@ -54,6 +54,61 @@ def base_height_relative_gaussian(
   return torch.exp(-height_error / max(float(std) ** 2, 1.0e-6))
 
 
+def stable_height_hold(
+  env: ManagerBasedRlEnv,
+  min_relative_height: float = 0.27,
+  height_scale: float = 0.03,
+  upright_threshold: float = -0.8,
+  contact_force_threshold: float = 5.0,
+  height_sensor_name: str = "base_height_scan",
+  foot_sensor_name: str = "feet_ground_contact",
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward maintaining a tall, upright, multi-foot support configuration."""
+  if height_scale <= 0.0:
+    raise ValueError("height_scale must be positive")
+  height_sensor = env.scene[height_sensor_name]
+  if not isinstance(height_sensor, TerrainHeightSensor):
+    raise TypeError(f"Expected TerrainHeightSensor for '{height_sensor_name}'")
+  foot_sensor = env.scene[foot_sensor_name]
+  if not isinstance(foot_sensor, ContactSensor) or foot_sensor.data.force is None:
+    return torch.zeros(env.num_envs, dtype=torch.float32, device=env.device)
+  asset: Entity = env.scene[asset_cfg.name]
+  relative_height = torch.nan_to_num(height_sensor.data.heights[:, 0], nan=0.0)
+  height_gate = torch.sigmoid((relative_height - min_relative_height) / height_scale)
+  force_norm = torch.linalg.vector_norm(foot_sensor.data.force, dim=-1)
+  contact_fraction = (force_norm >= contact_force_threshold).float().mean(dim=-1)
+  upright = asset.data.projected_gravity_b[:, 2] <= upright_threshold
+  return height_gate * contact_fraction * upright.to(dtype=height_gate.dtype)
+
+
+def height_progress(
+  env: ManagerBasedRlEnv,
+  progress_scale: float = 0.02,
+  height_sensor_name: str = "base_height_scan",
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward bounded positive local-height progress during recovery."""
+  if progress_scale <= 0.0:
+    raise ValueError("progress_scale must be positive")
+  sensor = env.scene[height_sensor_name]
+  if not isinstance(sensor, TerrainHeightSensor):
+    raise TypeError(f"Expected TerrainHeightSensor for '{height_sensor_name}'")
+  current = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0)
+  previous = env.__dict__.get("frnet_previous_relative_height")
+  if previous is None:
+    previous = torch.zeros_like(current)
+    env.__dict__["frnet_previous_relative_height"] = previous
+  delta = current - previous
+  previous[:] = current
+  delta = torch.where(
+    env.episode_length_buf <= 1, torch.zeros_like(delta), delta
+  )
+  asset: Entity = env.scene[asset_cfg.name]
+  upright_gate = (asset.data.projected_gravity_b[:, 2] < -0.2).float()
+  return upright_gate * torch.clamp(delta / progress_scale, min=0.0, max=1.0)
+
+
 def foot_contact_count(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -126,6 +181,43 @@ def upright_stability_support(
   stillness = torch.exp(-torch.square(angular_velocity / angular_velocity_std))
   upright = asset.data.projected_gravity_b[:, 2] <= upright_threshold
   return upright.to(dtype=stillness.dtype) * contact_fraction * stillness
+
+
+def horizontal_body_contact_force(
+  env: ManagerBasedRlEnv,
+  force_scale: float = 20.0,
+  sensor_names: tuple[str, ...] = (
+    "trunk_ground_touch",
+    "hip_ground_touch",
+    "thigh_ground_touch",
+    "shank_ground_touch",
+  ),
+) -> torch.Tensor:
+  """Return squared horizontal contact force on non-foot body parts.
+
+  FR-Net does not forbid every body contact during self-righting.  It does,
+  however, suppress large tangential forces that make the robot push against
+  a vertical obstacle and roll away from a support.  The returned positive
+  cost is intended to be used with a negative reward weight.
+  """
+  if force_scale <= 0.0:
+    raise ValueError("force_scale must be positive")
+  total = torch.zeros(env.num_envs, dtype=torch.float32, device=env.device)
+  for sensor_name in sensor_names:
+    sensor = env.scene[sensor_name]
+    if not isinstance(sensor, ContactSensor):
+      raise TypeError(f"Expected ContactSensor for '{sensor_name}'")
+    if sensor.data.force is None:
+      continue
+    force = sensor.data.force
+    horizontal_norm = torch.linalg.vector_norm(force[..., :2], dim=-1)
+    # Contact impulses can be very large for one simulation step.  A bounded
+    # penalty keeps one collision from dominating every other recovery term.
+    total = total + torch.sum(
+      torch.tanh(horizontal_norm / force_scale),
+      dim=tuple(range(1, horizontal_norm.ndim)),
+    )
+  return total
 
 
 def nonnegative_total_reward_correction(

@@ -29,6 +29,8 @@ def reset_fallen_root_state(
     minimum_root_height_above_origin: float = 0.50,
     linear_velocity_range: tuple[float, float] = (-0.25, 0.25),
     angular_velocity_range: tuple[float, float] = (-1.0, 1.0),
+    standing_probability: float = 0.0,
+    semi_fallen_probability: float = 0.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
     """Reset each robot into a collision-safe side, back, or belly fall.
@@ -40,14 +42,44 @@ def reset_fallen_root_state(
     """
     if minimum_root_height_above_origin <= 0.0:
         raise ValueError("minimum_root_height_above_origin must be positive")
+    if not 0.0 <= standing_probability <= 1.0:
+        raise ValueError("standing_probability must be in [0, 1]")
+    if not 0.0 <= semi_fallen_probability <= 1.0:
+        raise ValueError("semi_fallen_probability must be in [0, 1]")
+    if standing_probability + semi_fallen_probability > 1.0:
+        raise ValueError("standing and semi-fallen probabilities must sum to <= 1")
     env_ids = resolve_env_ids(env, env_ids)
     asset = env.scene[asset_cfg.name]
     root_state = asset.data.default_root_state[env_ids].clone()
     num_resets = len(env_ids)
 
+    mode_sample = torch.rand(num_resets, device=env.device)
+    standing = mode_sample < standing_probability
+    semi_fallen = (mode_sample >= standing_probability) & (
+      mode_sample < standing_probability + semi_fallen_probability
+    )
+    if "frnet_recovery_mask" not in env.extras:
+      env.extras["frnet_recovery_mask"] = torch.ones(
+        env.num_envs, dtype=torch.bool, device=env.device
+      )
+    env.extras["frnet_recovery_mask"][env_ids] = ~standing
     roll = sample_uniform(*roll_range, (num_resets,), device=env.device)
+    roll = torch.where(standing, torch.zeros_like(roll), roll)
+    roll = torch.where(
+        semi_fallen,
+        sample_uniform(-1.0, 1.0, (num_resets,), device=env.device),
+        roll,
+    )
     pitch_magnitude = sample_uniform(
         *fallen_pitch_range, (num_resets,), device=env.device
+    )
+    pitch_magnitude = torch.where(
+        semi_fallen,
+        sample_uniform(0.35, 0.80, (num_resets,), device=env.device),
+        pitch_magnitude,
+    )
+    pitch_magnitude = torch.where(
+        standing, torch.zeros_like(pitch_magnitude), pitch_magnitude
     )
     if pitch_sign is None:
         pitch_direction = torch.where(
@@ -72,15 +104,20 @@ def reset_fallen_root_state(
     position[:, :2] += sample_uniform(
         *xy_offset_range, (num_resets, 2), device=env.device
     )
-    position[:, 2] += sample_uniform(
+    fallen_height_offset = sample_uniform(
         *height_offset_range, (num_resets,), device=env.device
+    )
+    position[:, 2] += torch.where(
+        standing, torch.zeros_like(fallen_height_offset), fallen_height_offset
     )
     # Every recovery terrain has a flat center platform at its environment
     # origin.  Sensor readings still describe the previous state during reset,
     # so this origin-relative guard is the reliable way to prevent an initial
     # body/terrain overlap on both planes and generated terrain.
-    minimum_height = (
-        env.scene.env_origins[env_ids, 2] + minimum_root_height_above_origin
+    minimum_height = env.scene.env_origins[env_ids, 2] + torch.where(
+        standing,
+        torch.zeros_like(fallen_height_offset),
+        torch.full_like(fallen_height_offset, minimum_root_height_above_origin),
     )
     position[:, 2] = torch.maximum(position[:, 2], minimum_height)
     velocity = torch.cat(

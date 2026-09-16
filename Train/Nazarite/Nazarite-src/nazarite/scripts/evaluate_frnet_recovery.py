@@ -7,6 +7,7 @@ import math
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 
 import torch
 import tyro
@@ -137,6 +138,10 @@ def _evaluate_case(
     stable_steps = torch.zeros(cfg.num_envs, dtype=torch.long, device=device)
     recovery_time_s = torch.full((cfg.num_envs,), float("nan"), device=device)
     obs = env.get_observations()
+    initial_xy = raw_env.scene["robot"].data.root_link_pos_w[:, :2].clone()
+    max_xy_displacement = torch.zeros(cfg.num_envs, device=device)
+    max_base_ang_vel = torch.zeros(cfg.num_envs, device=device)
+    max_horizontal_body_force = torch.zeros(cfg.num_envs, device=device)
 
     for step in range(max_steps):
       with torch.inference_mode():
@@ -144,6 +149,28 @@ def _evaluate_case(
       obs, _, _, _ = env.step(actions)
 
       stable = _stable_standing_mask(raw_env, cfg)
+      robot = raw_env.scene["robot"]
+      xy_displacement = torch.linalg.vector_norm(
+        robot.data.root_link_pos_w[:, :2] - initial_xy, dim=-1
+      )
+      max_xy_displacement = torch.maximum(max_xy_displacement, xy_displacement)
+      base_ang_vel = torch.linalg.vector_norm(robot.data.root_link_ang_vel_b, dim=-1)
+      max_base_ang_vel = torch.maximum(max_base_ang_vel, base_ang_vel)
+      body_force = torch.zeros(cfg.num_envs, device=device)
+      for sensor_name in (
+        "trunk_ground_touch",
+        "hip_ground_touch",
+        "thigh_ground_touch",
+        "shank_ground_touch",
+      ):
+        force = raw_env.scene[sensor_name].data.force
+        if force is not None:
+          body_force = body_force + torch.linalg.vector_norm(force[..., :2], dim=-1).reshape(
+            cfg.num_envs, -1
+          ).sum(dim=-1)
+      max_horizontal_body_force = torch.maximum(
+        max_horizontal_body_force, body_force
+      )
       stable_steps = torch.where(
         stable, stable_steps + 1, torch.zeros_like(stable_steps)
       )
@@ -161,6 +188,9 @@ def _evaluate_case(
       "success_rate": success.float().mean().item(),
       "final_stable_rate": final_stable.float().mean().item(),
       "mean_time_to_stable_s": mean_recovery_time_s,
+      "mean_max_xy_displacement_m": max_xy_displacement.mean().item(),
+      "mean_max_base_ang_vel_rad_s": max_base_ang_vel.mean().item(),
+      "mean_max_horizontal_body_force_n": max_horizontal_body_force.mean().item(),
       "trials": float(cfg.num_envs),
     }
   finally:
@@ -191,13 +221,17 @@ def run_evaluate(task_id: str, cfg: EvaluateConfig) -> dict[str, object]:
     for index, case in enumerate(_FALL_CASES)
   }
   per_case = list(results.values())
-  success_rates = [metrics["success_rate"] for metrics in per_case]
-  final_stable_rates = [metrics["final_stable_rate"] for metrics in per_case]
-  recovery_times = [
-    value
-    for metrics in per_case
-    if (value := metrics["mean_time_to_stable_s"]) is not None
+  success_rates: list[float] = [
+    cast(float, metrics["success_rate"]) for metrics in per_case
   ]
+  final_stable_rates: list[float] = [
+    cast(float, metrics["final_stable_rate"]) for metrics in per_case
+  ]
+  recovery_times: list[float] = []
+  for case_metrics in per_case:
+    value = case_metrics["mean_time_to_stable_s"]
+    if value is not None:
+      recovery_times.append(cast(float, value))
   overall = {
     "mean_success_rate": sum(success_rates) / len(success_rates),
     "mean_final_stable_rate": sum(final_stable_rates) / len(final_stable_rates),

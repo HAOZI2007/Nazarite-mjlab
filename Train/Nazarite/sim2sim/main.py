@@ -16,24 +16,32 @@ from .gamepad import GamepadController, format_gamepads, list_gamepads
 from .math_utils import action_to_target
 from .mujoco_io import MuJoCoIO
 from .policy_runner import PolicyRunner
+from .scene import add_stairs_and_slopes_scene
 from .wtw import config as wtw_config
 from .wtw.command import restrict_command as wtw_command
 from .wtw.observation import WTWObservationBuilder
 
 
 def default_policy_path(mode: str = "baseline") -> Path:
-    policy_path = wtw_config.POLICY if mode == "wtw" else baseline_config.POLICY
+    if mode == "wtw":
+        policy_path = wtw_config.POLICY
+    else:
+        policy_path = baseline_config.POLICY
     if not policy_path.is_file():
         raise FileNotFoundError(
             f"Default policy not found: {policy_path}. "
-            "Pass --policy /path/to/policy.onnx."
+            "Pass --policy /path/to/policy.onnx or /path/to/model.pt."
         )
     return policy_path
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Nazarite Go2 MuJoCo sim2sim")
-    parser.add_argument("--mode", choices=("baseline", "wtw"), default="baseline")
+    parser.add_argument(
+        "--mode",
+        choices=("baseline", "wtw"),
+        default="baseline",
+    )
     parser.add_argument("--policy", type=Path, default=None)
     parser.add_argument("--vx", type=float, default=0.0)
     parser.add_argument("--vy", type=float, default=0.0)
@@ -78,18 +86,35 @@ def main() -> None:
             axis_yaw=args.axis_yaw,
         )
 
-    io = MuJoCoIO()
+    if args.mode == "wtw":
+        hip_effort = wtw_config.HIP_EFFORT
+        calf_effort = wtw_config.CALF_EFFORT
+        io = MuJoCoIO(
+            hip_effort=hip_effort,
+            calf_effort=calf_effort,
+            scene_builder=add_stairs_and_slopes_scene,
+        )
+    else:
+        io = MuJoCoIO()
+    standard_policy: PolicyRunner | None = None
     if args.mode == "wtw":
         expected_obs_dim = wtw_config.OBS_DIM
         expected_observation_names = wtw_config.OBSERVATION_NAMES
+        standard_policy = PolicyRunner(
+            policy_path,
+            expected_obs_dim=expected_obs_dim,
+            expected_observation_names=expected_observation_names,
+        )
+        policy = standard_policy
     else:
         expected_obs_dim = baseline_config.OBS_DIM
         expected_observation_names = baseline_config.OBSERVATION_NAMES
-    policy = PolicyRunner(
-        policy_path,
-        expected_obs_dim=expected_obs_dim,
-        expected_observation_names=expected_observation_names,
-    )
+        standard_policy = PolicyRunner(
+            policy_path,
+            expected_obs_dim=expected_obs_dim,
+            expected_observation_names=expected_observation_names,
+        )
+        policy = standard_policy
     wtw_builder = WTWObservationBuilder() if args.mode == "wtw" else None
     io.reset()
     policy.reset()
@@ -122,12 +147,20 @@ def main() -> None:
 
                 if wtw_builder is not None:
                     command = wtw_command(command)
-
                 if wtw_builder is None:
-                    obs = build_observation(io, command, policy.last_action)
+                    if standard_policy is None:
+                        raise RuntimeError("Standard policy is not initialized")
+                    obs = build_observation(
+                        io, command, standard_policy.last_action
+                    )
+                    raw_action = standard_policy.step(obs)
                 else:
-                    obs = wtw_builder.build(io, command, policy.last_action)
-                raw_action = policy.step(obs)
+                    if standard_policy is None:
+                        raise RuntimeError("WTW policy is not initialized")
+                    obs = wtw_builder.build(
+                        io, command, standard_policy.last_action
+                    )
+                    raw_action = standard_policy.step(obs)
                 target_q = action_to_target(
                     raw_action, io.default_q, ACTION_SCALE
                 )

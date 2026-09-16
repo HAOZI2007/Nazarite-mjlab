@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import importlib
+import copy
 import pkgutil
 import torch
 import warnings
 from tensordict import TensorDict
 from typing import Any, Callable
+from collections.abc import Iterable
 
 import rsl_rl
 
@@ -172,6 +174,36 @@ def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
         f"Could not resolve '{callable_or_name}'. Use qualified name like 'module.path:ClassName' "
         f"or pass the class directly."
     )
+
+
+def resolve_class(cfg: dict) -> tuple[Callable, dict]:
+    """Resolve a class config without mutating the caller's dictionary."""
+    class_cfg = copy.deepcopy(cfg)
+    return resolve_callable(class_cfg.pop("class_name")), class_cfg
+
+
+def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:
+    """Average distributed gradients in bounded-size flattened buckets."""
+    bucket_bytes = max(1, int(bucket_mb * 1024 * 1024))
+    grads = [p.grad.view(-1) for p in params if p.grad is not None]
+    start = 0
+    while start < len(grads):
+        end, filled = start, 0
+        while end < len(grads):
+            size = grads[end].numel() * grads[end].element_size()
+            if end > start and filled + size > bucket_bytes:
+                break
+            filled += size
+            end += 1
+        packed = torch.cat(grads[start:end])
+        torch.distributed.all_reduce(packed)
+        packed.div_(world_size)
+        offset = 0
+        for grad in grads[start:end]:
+            n = grad.numel()
+            grad.copy_(packed[offset:offset+n])
+            offset += n
+        start = end
 
 
 def resolve_obs_groups(

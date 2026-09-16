@@ -221,7 +221,12 @@ def _decompose_pseudo_inertia_J(
   )  # (*batch, 3, 3)
 
   # Columns of V are principal axes in body frame; eigenvalues are principal moments.
-  principal_moments, V = _eigh_3x3_jacobi(I_com)
+  # The hand-written Jacobi path is fast for generic matrices, but can produce
+  # 0/0 rotations for the nearly diagonal/repeated-eigenvalue inertia tensors
+  # used by symmetric quadruped hip bodies.  That writes NaNs into MuJoCo's
+  # body fields before the first reset.  The batched 3x3 eigh is small here
+  # (only the selected rigid bodies) and is numerically stable on CPU and CUDA.
+  principal_moments, V = torch.linalg.eigh(I_com)
 
   # Ensure V is a proper rotation (det = +1). eigh can return reflections.
   dets = torch.linalg.det(V)  # (*batch,)
@@ -492,6 +497,17 @@ def pseudo_inertia(
     env_ids = env_ids.to(env.device, dtype=torch.int)
 
   entity_indices = _get_entity_indices(asset.indexing, asset_cfg, "body", False)
+  # Some robot XMLs expose massless connector bodies (for example hip
+  # attachment bodies) in the articulation index.  They do not define a
+  # positive-definite pseudo-inertia matrix and must not be passed through the
+  # Cholesky/eigendecomposition path.
+  default_mass = env.sim.get_default_field("body_mass")
+  if "body_mass" in env.sim.per_world_default_fields:
+    default_mass = default_mass[0]
+  positive_mass = default_mass[entity_indices] > 1e-8
+  entity_indices = entity_indices[positive_mass]
+  if entity_indices.numel() == 0:
+    return
   n_envs = len(env_ids)
   n_bodies = len(entity_indices)
   shape = (n_envs, n_bodies)

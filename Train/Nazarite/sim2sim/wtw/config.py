@@ -15,6 +15,8 @@ POLICY = (
 
 OBS_DIM = 498
 OBSERVATION_NAMES = [*ACTOR_TERM_NAMES, "behavior", "phase"]
+HIP_EFFORT = 23.7
+CALF_EFFORT = 45.43
 
 # Exact fixed behavior used by the selected run's env.yaml.
 # The training run sampled frequency in [2, 3] and used trot only; 2.5 Hz is

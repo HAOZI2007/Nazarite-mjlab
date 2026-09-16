@@ -25,6 +25,11 @@ from .config.train_config.smp_config.smp_teacher_env_cfgs import (
 from .config.train_config.smp_config.smp_teacher_rl_cfg import (
     smp_teacher_go2_runner_cfg,
 )
+from .config.train_config.him_cfg import (
+    Nazarite_HIM_Obstacle_Go2,
+    unitree_go2_him_runner_cfg,
+)
+from rsl_rl.runners import HIMOnPolicyRunner
 
 register_mjlab_task(
     task_id="Nazarite-Velocity-Flat-Go2",
@@ -32,6 +37,14 @@ register_mjlab_task(
     play_env_cfg=Nazarite_Velocity_Flat_Go2_No_WTW(play=True),
     rl_cfg=unitree_go2_normal_ppo_runner_cfg(experiment_name="go2_flat_baseline"),
     runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Nazarite-HIM-Complex-Terrain-Go2",
+    env_cfg=Nazarite_HIM_Obstacle_Go2(),
+    play_env_cfg=Nazarite_HIM_Obstacle_Go2(play=True),
+    rl_cfg=unitree_go2_him_runner_cfg(),
+    runner_cls=HIMOnPolicyRunner,
 )
 
 register_mjlab_task(

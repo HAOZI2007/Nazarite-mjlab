@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import mujoco
 import numpy as np
 
@@ -39,9 +41,17 @@ except ImportError:  # pragma: no cover - direct script fallback
     from scene import add_simple_grid_scene
 
 class MuJoCoIO:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        hip_effort: float = 45.0,
+        calf_effort: float = 45.0,
+        scene_builder: Callable[[mujoco.MjSpec], None] = add_simple_grid_scene,
+    ):
         if not GO2_XML.is_file():
             raise FileNotFoundError(f"Go2 XML not found: {GO2_XML}")
+        if hip_effort <= 0.0 or calf_effort <= 0.0:
+            raise ValueError("Actuator effort limits must be positive")
 
         spec = mujoco.MjSpec.from_file(str(GO2_XML))
 
@@ -63,11 +73,11 @@ class MuJoCoIO:
             if "calf" in name:
                 kp = STIFFNESS_CALF * KP_SCALE
                 kd = DAMPING_CALF * KD_SCALE
-                effort = 45.0
+                effort = calf_effort
             else:
                 kp = STIFFNESS_HIP * KP_SCALE
                 kd = DAMPING_HIP * KD_SCALE
-                effort = 45.0
+                effort = hip_effort
 
             actuator.gainprm[0] = kp
             actuator.biasprm[1] = -kp
@@ -75,9 +85,9 @@ class MuJoCoIO:
             actuator.forcelimited = True
             actuator.forcerange[:] = [-effort, effort]
 
-        # The standalone robot XML has no world. Every policy shares this
-        # simple flat-grid scene; visual grid sites do not affect contacts.
-        add_simple_grid_scene(spec)
+        # The standalone robot XML has no world. Visual grid sites do not
+        # affect contacts; a policy may request extra collidable obstacles.
+        scene_builder(spec)
 
         self.model = spec.compile()
         self.model.opt.timestep = PHYSICS_DT

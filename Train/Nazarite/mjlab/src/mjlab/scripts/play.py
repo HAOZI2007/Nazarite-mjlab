@@ -49,6 +49,9 @@ class PlayConfig:
   viewer: Literal["auto", "native", "viser"] = "auto"
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
+  export_onnx: bool = False
+  """Export the loaded trained policy to ONNX in the checkpoint directory."""
+  onnx_filename: str = "policy.onnx"
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
 
@@ -205,6 +208,19 @@ def run_play(task_id: str, cfg: PlayConfig):
     runner.load(
       str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
     )
+    if cfg.export_onnx:
+      runner.export_policy_to_onnx(str(resume_path.parent), cfg.onnx_filename)
+      try:
+        from mjlab.rl.exporter_utils import attach_metadata_to_onnx, get_base_metadata
+        attach_metadata_to_onnx(
+          str(resume_path.parent / cfg.onnx_filename),
+          get_base_metadata(env.unwrapped, "local"),
+        )
+      except Exception as exc:
+        print(f"[WARN] ONNX metadata export skipped: {exc}")
+      print(f"[INFO] Exported ONNX policy: {resume_path.parent / cfg.onnx_filename}")
+      # Export mode is intentionally non-interactive; do not launch a viewer.
+      return
     policy = runner.get_inference_policy(device=device)
 
   # Build checkpoint manager for hot-swapping checkpoints in the viewer.
