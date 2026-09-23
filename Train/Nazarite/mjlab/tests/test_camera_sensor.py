@@ -152,6 +152,41 @@ def test_camera_create_new(device):
   assert data.rgb.shape == (2, 12, 16, 3)
 
 
+def test_camera_create_new_with_pixel_intrinsics(device):
+  """Programmatic cameras preserve calibrated pixel intrinsics."""
+  xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="floor" type="plane" size="10 10 0.1"/>
+      </worldbody>
+    </mujoco>
+  """
+  focal = (31.7385, 31.5401)
+  principal = (32.3089, 17.8522)
+  cam_cfg = CameraSensorCfg(
+    name="calibrated_camera",
+    width=64,
+    height=36,
+    focal_length_px=focal,
+    principal_point_px=principal,
+    data_types=("depth",),
+  )
+  _, sim = _make_scene_and_sim(device, sensors=(cam_cfg,), xml=xml, num_envs=1)
+
+  cam_id = sim.mj_model.camera("calibrated_camera").id
+  sensor_size = sim.mj_model.cam_sensorsize[cam_id]
+  intrinsic = sim.mj_model.cam_intrinsic[cam_id]
+  compiled_focal_px = intrinsic[:2] / sensor_size * (64, 36)
+  compiled_principal_px = intrinsic[2:] / sensor_size * (64, 36)
+  assert compiled_focal_px == pytest.approx(focal, rel=1.0e-5)
+  assert compiled_principal_px == pytest.approx(principal, rel=1.0e-5)
+
+
+def test_camera_pixel_intrinsics_must_be_complete():
+  with pytest.raises(ValueError, match="must be provided together"):
+    CameraSensorCfg(name="invalid", focal_length_px=(10.0, 10.0))
+
+
 def test_camera_rgb_not_all_zeros(device):
   """RGB data should contain non-zero values when scene has objects."""
   cam_cfg = CameraSensorCfg(

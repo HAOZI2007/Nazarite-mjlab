@@ -182,6 +182,7 @@ class ViserPlayViewer(BaseViewer):
           self._server, on_change=self._scene.request_update
         )
         self._create_sensor_debug_vis_gui()
+        self._create_delta_attention_gui()
         self._create_reward_debug_vis_gui()
 
       with self._server.gui.add_folder("Scene"):
@@ -421,6 +422,40 @@ class ViserPlayViewer(BaseViewer):
         self._scene.request_update()
 
       cb.on_update(_on_update)
+
+  def _create_delta_attention_gui(self) -> None:
+    """Add the DELTA sampling-point/attention toggle when available."""
+    env = self.env.unwrapped
+    policy = getattr(env, "debug_policy", None)
+    if policy is None or not hasattr(policy, "debug_visualize"):
+      return
+    cb = self._server.gui.add_checkbox(
+      "DELTA Attention",
+      initial_value=bool(getattr(env, "delta_attention_enabled", True)),
+    )
+
+    def _on_update(_) -> None:
+      env.delta_attention_enabled = bool(cb.value)
+      self._scene.request_update()
+
+    cb.on_update(_on_update)
+
+    # Averaging the four heads is the clearest default.  Expose an optional
+    # all-heads switch for inspecting head specialization without changing the
+    # model or restarting play.
+    if hasattr(policy, "attention_show_all_heads"):
+      heads_cb = self._server.gui.add_checkbox(
+        "DELTA all heads",
+        initial_value=bool(policy.attention_show_all_heads),
+      )
+
+      def _on_heads_update(_) -> None:
+        current_policy = getattr(env, "debug_policy", policy)
+        if hasattr(current_policy, "attention_show_all_heads"):
+          current_policy.attention_show_all_heads = bool(heads_cb.value)
+        self._scene.request_update()
+
+      heads_cb.on_update(_on_heads_update)
 
   def _queue_debug_visualizers(self) -> None:
     """Queue environment-specific debug draw calls into the scene.

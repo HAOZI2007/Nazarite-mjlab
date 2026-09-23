@@ -826,3 +826,41 @@ delta sample range x/y: ...
 平地 smoke test 的合理现象是：前几百次迭代成功率可能很低，但不能出现 NaN；
 采样点可以暂时随机，随着训练应逐渐集中到有效地形。若 actor latent 不是 112、
 action 不是 12，先不要调奖励或学习率，优先修正 observation/model 接线。
+
+## 15.13 当前仓库已经落地的第一版
+
+当前实现已经新增：
+
+```text
+Nazarite-src/nazarite/delta/sampling.py
+Nazarite-src/nazarite/delta/encoder.py
+Nazarite-src/nazarite/delta/rsl_model.py
+Nazarite-src/nazarite/mdp/delta_observations.py
+Nazarite-src/nazarite/config/train_config/delta_rl_cfg.py
+Nazarite-src/nazarite/config/train_config/env_cfgs/delta_go2_env_cfgs.py
+mjlab/tests/test_delta_encoder.py
+```
+
+并注册了任务：
+
+```text
+Nazarite-Delta-Go2
+```
+
+该任务的设计是：从现有 Go2 actor observation 中删除 `base_lin_vel`，因此当前
+本体感知为 45 维；新增 `delta_map`，使用 MuJoCo RayCast 生成 `26×16×3` 地图，
+并把地图作为 actor group 的最后一项。`DeltaModel` 再从拼接向量中切出前 45 维
+和最后 `26×16×3` 维，恢复地图空间结构后送入 `DeltaEncoder`。
+
+首次运行建议：
+
+```bash
+cd /home/haozi/桌面/Nazarite-mjlab/Train/Nazarite
+uv run list-envs
+uv run train Nazarite-Delta-Go2
+```
+
+如果环境中还没有 `uv`，先按项目现有方式安装/激活 `.venv`。当前代码已经通过
+Python 语法编译检查；运行训练前还需要在装有项目依赖的环境中运行
+`pytest mjlab/tests/test_delta_encoder.py`，确认 PyTorch、mjlab 和 MuJoCo 版本
+一致。第一版故意没有修改原有 WTW/HIM/FR-Net 任务。

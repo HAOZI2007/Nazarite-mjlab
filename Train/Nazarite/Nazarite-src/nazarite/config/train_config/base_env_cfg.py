@@ -30,7 +30,7 @@ def _make_wtw_velocity_command() -> GridAdaptiveVelocityCommandCfg:
   return GridAdaptiveVelocityCommandCfg(
     entity_name="robot",
     resampling_time_range=(10.0, 20.0),
-    rel_standing_envs=0.2,
+    rel_standing_envs=0.1,
     rel_heading_envs=0.0,
     rel_forward_envs=0.0,
     heading_command=False,
@@ -40,7 +40,7 @@ def _make_wtw_velocity_command() -> GridAdaptiveVelocityCommandCfg:
     # 一次性引入，同时保留高速前进/倒退的渐进课程。
     grid_num_x=5,
     grid_num_yaw=5,
-    initial_cell=(3, 3),
+    initial_cell=(2, 2),
     # 25 个严格 frontier cell 使用 4096 个命令段即可完成一轮可靠验证；
     # 保留旧的 8192 会使课程扩展不必要地缓慢。
     min_cell_visits=2048,
@@ -70,15 +70,15 @@ def _make_wtw_behavior_command() -> WTWBehaviorCommandCfg:
   """创建当前 Trot 课程的行为命令。"""
   return WTWBehaviorCommandCfg(
     entity_name="robot",
-    resampling_time_range=(30.0, 30.0),
+    resampling_time_range=(10.0, 20.0),
     # 在已验证的 2.0 Hz Trot 基础上只开放小范围，先学习速度变化下的
     # 步频适配，避免直接引入过宽的行为分布而破坏已收敛的接触时序。
-    frequency_range=(2.0, 3.0),
+    frequency_range=(2.0, 4.0),
     # body_height 是相对 0.32 m 基础高度的偏移；0.0 即目标 0.32 m。
-    body_height_range=(0.0, 0.0),
-    body_pitch_range=(0.0, 0.0),
-    stance_width_range=(0.25, 0.25),
-    foot_swing_height_range=(0.06, 0.06),
+    body_height_range=(-0.025, 0.025),
+    body_pitch_range=(-0.035, 0.035),
+    stance_width_range=(0.21, 0.29),
+    foot_swing_height_range=(0.055, 0.080),
     duty_factor=0.5,
     gait_names=("trot",),
     # reset 从支撑相开始，避免随机初相位与初始站姿冲突。
@@ -423,14 +423,14 @@ def make_base_env_cfg(
       # 一个 episode 使用一个速度网格，便于把成功/失败归因到当前 cell。
       resampling_time_range=(10.0, 20.0),
       # 保留 10% 零速度站立任务；该任务不参与速度网格成功率统计。
-      rel_standing_envs=0.3,
+      rel_standing_envs=0.1,
       rel_heading_envs=0.0,
       rel_forward_envs=0.0,
       heading_command=False,
       grid_num_x=5,
       grid_num_yaw=5,
       # 初始 cell 覆盖接近零速度的区域；课程成功后向四周扩展。
-      initial_cell=(3, 3),
+      initial_cell=(2, 2),
       min_cell_visits=1024,
       success_window_size=1024,
       max_new_cells_per_update=1,
@@ -442,7 +442,7 @@ def make_base_env_cfg(
         # 这是课程最终覆盖范围，而不是每个 episode 的采样范围。
         lin_vel_x=(-1.0, 1.0),
         lin_vel_y=(-0.5, 0.5),
-        ang_vel_z=(-1.0, 1.0),
+        ang_vel_z=(-0.5, 0.5),
         heading=None,
       ),
     ),

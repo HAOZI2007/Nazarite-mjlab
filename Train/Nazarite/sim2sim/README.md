@@ -4,12 +4,13 @@
 创建 mjlab 的 ManagerBased 环境，而是直接读取 Go2 XML，构造一个简化平面，
 加载已经训练好的 actor，然后以和训练一致的控制频率驱动机器人。
 
-当前支持两种模式：
+当前支持三种模式：
 
 | 模式 | 策略 | 观测维度 | 用途 |
 |---|---|---:|---|
 | `baseline` | `Nazarite-Velocity-Flat-Go2` | 45 | 普通 Grid Adaptive 速度策略 |
 | `wtw` | `Nazarite-Velocity-Flat-Go2-WTW` | 498 | Grid Adaptive + WTW Trot 策略 |
+| `wtw_delta_residual` | `go2_wtw_delta_residual/model_5650.pt` | 2223 | WTW prior + DELTA residual 踏石策略 |
 
 当前 WTW sim2sim 配置针对已经训练好的 Trot 策略，默认 behavior 为 2.5 Hz、
 0 偏移机体高度、0 pitch、0.25 m 步宽和 0.06 m 摆腿高度。它不是通用的多步态
@@ -33,6 +34,11 @@ Train/Nazarite/sim2sim/
 │   ├── config.py           # WTW 模型路径、behavior 和 command 限幅
 │   ├── command.py          # WTW command 限幅
 │   └── observation.py      # WTW 历史帧和 phase 构造
+├── wtw_delta_residual/
+│   ├── config.py           # model_5650.pt 和 2223D 输入契约
+│   ├── observation.py      # 498D WTW + 61D DELTA proprioception
+│   ├── policy.py           # WTW + DELTA .pt actor 推理
+│   └── terrain.py          # 踏石场景和 16x26x4 BEV 射线地图
 ├── gamepad.py              # Linux evdev 手柄读取
 ├── camera.py               # 跟随机器人相机
 └── math_utils.py           # action 到关节目标的转换
@@ -121,6 +127,29 @@ uv run python -m sim2sim.main \
 `actor_state_dict` 重建 MLP，并检查输入维度是否为 498、输出维度是否为 12。
 baseline 常用 `.onnx`，加载时还会检查 ONNX metadata 中的观测名称和关节顺序。
 
+### 3.3 WTW + DELTA 踏石策略
+
+不指定 `--policy` 时，`wtw_delta_residual` 会自动加载：
+
+```text
+logs/rsl_rl/go2_wtw_delta_residual/2026-09-22_18-53-22/model_5650.pt
+```
+
+直接测试踏石场景：
+
+```bash
+./mjlab/.venv/bin/python -m sim2sim.main \
+  --mode wtw_delta_residual \
+  --vx 0.25 \
+  --vy 0.0 \
+  --yaw 0.0 \
+  --no-camera-follow
+```
+
+这个模式的输入不是普通 498D WTW 输入，而是：498D WTW 历史、61D 当前
+DELTA 状态和 16x26x4 的局部地形地图，总计 2223D。地图由 MuJoCo 踏石和
+坑底的碰撞几何实时射线采样得到。
+
 ### 3.3 调整相机
 
 ```bash
@@ -151,11 +180,26 @@ uv run python -m sim2sim.main --list-gamepads
 使用自动发现的第一个手柄：
 
 ```bash
-uv run python -m sim2sim.main \
-  --mode wtw \
-  --policy /absolute/path/to/policy.pt \
+./mjlab/.venv/bin/python -m sim2sim.main \
+  --mode wtw_delta_residual \
   --gamepad
 ```
+
+不使用镜头跟随，同时限制踏石测试速度：
+
+```bash
+./mjlab/.venv/bin/python -m sim2sim.main \
+  --mode wtw_delta_residual \
+  --gamepad \
+  --max-vx 0.5 \
+  --max-vy 0.5 \
+  --max-yaw 0.5 \
+  --no-camera-follow
+```
+
+在 DELTA 模式下，WTW behavior 仍可通过手柄调整：右摇杆 Y 调频率，LB/RB
+调 body height，LT/RT 调 body pitch，X/B 调 stance width，A/Y 调 swing
+height，Select 恢复默认值。Trot 的相位关系保持不变。
 
 默认映射为：
 
@@ -194,6 +238,8 @@ uv run python -m sim2sim.main \
 WTW 模式进行 command 限幅
         ↓
 从 MuJoCo 状态构造 actor observation
+        ↓
+构造 WTW 历史、DELTA proprioception 和局部 BEV 地图
         ↓
 ONNX/.pt actor 推理，得到 12 维归一化 action
         ↓

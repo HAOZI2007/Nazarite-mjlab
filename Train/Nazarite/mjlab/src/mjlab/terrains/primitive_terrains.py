@@ -429,6 +429,8 @@ class BoxRandomGridTerrainCfg(SubTerrainCfg):
   [-bound, +bound]."""
   platform_width: float = 1.0
   """Side length of the flat square platform at the grid center, in meters."""
+  fill_gaps: bool = False
+  """Add a continuous ground slab below the grid cells."""
   holes: bool = False
   """If True, only the cross-shaped region around the center platform has grid cells."""
   merge_similar_heights: bool = False
@@ -504,6 +506,21 @@ class BoxRandomGridTerrainCfg(SubTerrainCfg):
       boxes_list.append(box)
       box_colors.append(border_rgba)
 
+    if self.fill_gaps:
+      # A shallow slab closes the spaces between cells without changing the
+      # tops of the random-height boxes. Its top is the lowest possible cell
+      # height, so negative grid samples remain shallow depressions instead of
+      # becoming empty holes.
+      floor_top = -grid_height
+      floor_geom = body.add_geom(
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=(num_boxes_x * self.grid_width / 2,
+              num_boxes_y * self.grid_width / 2, 0.05),
+        pos=(self.size[0] / 2, self.size[1] / 2, floor_top - 0.05),
+      )
+      boxes_list.append(floor_geom)
+      box_colors.append(brand_ramp(_MUJOCO_GREEN, 0.25))
+
     height_map = rng.uniform(-grid_height, grid_height, (num_boxes_x, num_boxes_y))
 
     if self.merge_similar_heights and not self.holes:
@@ -531,18 +548,18 @@ class BoxRandomGridTerrainCfg(SubTerrainCfg):
       boxes_list.extend(box_list_)
       box_colors.extend(box_color_)
 
-    # Platform
-    platform_height = terrain_height + grid_height
-    platform_center_z = -terrain_height / 2 + grid_height / 2
-    half_platform = self.platform_width / 2
-
-    box = body.add_geom(
-      type=mujoco.mjtGeom.mjGEOM_BOX,
-      size=(half_platform, half_platform, platform_height / 2),
-      pos=(self.size[0] / 2, self.size[1] / 2, platform_center_z),
-    )
-    boxes_list.append(box)
-    box_colors.append(brand_ramp(_MUJOCO_GREEN, 0.5))
+    # A zero-width platform disables the center patch for DELTA terrains.
+    if self.platform_width > 0.0:
+      platform_height = terrain_height + grid_height
+      platform_center_z = -terrain_height / 2 + grid_height / 2
+      half_platform = self.platform_width / 2
+      box = body.add_geom(
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=(half_platform, half_platform, platform_height / 2),
+        pos=(self.size[0] / 2, self.size[1] / 2, platform_center_z),
+      )
+      boxes_list.append(box)
+      box_colors.append(brand_ramp(_MUJOCO_GREEN, 0.5))
 
     origin = np.array([self.size[0] / 2, self.size[1] / 2, grid_height])
 
@@ -577,14 +594,15 @@ class BoxRandomGridTerrainCfg(SubTerrainCfg):
     terrain_center = self.size[0] / 2
     platform_min = terrain_center - platform_half
     platform_max = terrain_center + platform_half
-    for i in range(num_boxes_x):
-      cx = half_border_width + (i + 0.5) * self.grid_width
-      if not (platform_min <= cx <= platform_max):
-        continue
-      for j in range(num_boxes_y):
-        cy = half_border_width + (j + 0.5) * self.grid_width
-        if platform_min <= cy <= platform_max:
-          visited[i, j] = True
+    if self.platform_width > 0.0:
+      for i in range(num_boxes_x):
+        cx = half_border_width + (i + 0.5) * self.grid_width
+        if not (platform_min <= cx <= platform_max):
+          continue
+        for j in range(num_boxes_y):
+          cy = half_border_width + (j + 0.5) * self.grid_width
+          if platform_min <= cy <= platform_max:
+            visited[i, j] = True
 
     # Quantize heights to create more merging opportunities
     quantized_heights = (
@@ -693,7 +711,7 @@ class BoxRandomGridTerrainCfg(SubTerrainCfg):
         # Skip cells under the center platform so the platform is the only
         # geometry there. Otherwise the platform box sits on top of these cells
         # and the coplanar faces z-fight.
-        if (platform_min <= box_center_x <= platform_max) and (
+        if self.platform_width > 0.0 and (platform_min <= box_center_x <= platform_max) and (
           platform_min <= box_center_y <= platform_max
         ):
           continue
@@ -1212,6 +1230,7 @@ class BoxSteppingStonesTerrainCfg(SubTerrainCfg):
     gap_x = max(0.0, pitch_x - avg_stone_size)
     gap_y = max(0.0, pitch_y - avg_stone_size)
 
+    platform_enabled = self.platform_width > 0.0
     # Snap the central platform out to the grid. It is at least the configured
     # width and reaches to exactly one gap before the nearest *full* stone, so the
     # ring of stones around it are whole (no clipped slivers that pop in and out
@@ -1228,8 +1247,11 @@ class BoxSteppingStonesTerrainCfg(SubTerrainCfg):
       c_keep = self.border_width + i_keep * pitch
       return max(a0, c_keep - half_stone - gap - center)
 
-    platform_half_x = _snapped_half(center_x, pitch_x, gap_x, num_x)
-    platform_half_y = _snapped_half(center_y, pitch_y, gap_y, num_y)
+    if platform_enabled:
+      platform_half_x = _snapped_half(center_x, pitch_x, gap_x, num_x)
+      platform_half_y = _snapped_half(center_y, pitch_y, gap_y, num_y)
+    else:
+      platform_half_x = platform_half_y = 0.0
     platform_min_x, platform_max_x = (
       center_x - platform_half_x,
       center_x + platform_half_x,
@@ -1264,19 +1286,21 @@ class BoxSteppingStonesTerrainCfg(SubTerrainCfg):
     )
     geometries.append(TerrainGeometry(geom=floor_geom, color=(0.1, 0.1, 0.1, 1.0)))
 
-    # Platform Column (grid-snapped, see above).
-    platform_geom = body.add_geom(
-      type=mujoco.mjtGeom.mjGEOM_BOX,
-      size=(
-        np.maximum(1e-6, platform_half_x),
-        np.maximum(1e-6, platform_half_y),
-        np.maximum(1e-6, half_height),
-      ),
-      pos=(center_x, center_y, z_center),
-    )
-    geometries.append(
-      TerrainGeometry(geom=platform_geom, color=brand_ramp(_MUJOCO_GREEN, 0.5))
-    )
+    # Platform Column (grid-snapped, see above). A zero-width platform lets
+    # DELTA use the normal stone grid through the center.
+    if platform_enabled:
+      platform_geom = body.add_geom(
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=(
+          np.maximum(1e-6, platform_half_x),
+          np.maximum(1e-6, platform_half_y),
+          np.maximum(1e-6, half_height),
+        ),
+        pos=(center_x, center_y, z_center),
+      )
+      geometries.append(
+        TerrainGeometry(geom=platform_geom, color=brand_ramp(_MUJOCO_GREEN, 0.5))
+      )
 
     inner_min_x, inner_max_x = self.border_width, self.size[0] - self.border_width
     inner_min_y, inner_max_y = self.border_width, self.size[1] - self.border_width

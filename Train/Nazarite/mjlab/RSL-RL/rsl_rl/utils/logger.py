@@ -164,6 +164,7 @@ class Logger:
         learning_rate: float,
         action_std: torch.Tensor,
         rnd_weight: float | None,
+        diagnostics: dict[str, torch.Tensor] | None = None,
         print_minimal: bool = False,
         width: int = 80,
         pad: int = 40,
@@ -209,6 +210,14 @@ class Logger:
 
             # Log std
             self.writer.add_scalar("Policy/mean_std", action_std.mean().item(), it)
+
+            # Optional task-model diagnostics.  Models that do not expose this
+            # interface leave the logger completely unchanged.
+            if diagnostics:
+                for key, value in diagnostics.items():
+                    if isinstance(value, torch.Tensor):
+                        value = value.detach().float().mean().item()
+                    self.writer.add_scalar(key, float(value), it)
 
             # Log performance
             fps = int(collection_size / (collect_time + learn_time))

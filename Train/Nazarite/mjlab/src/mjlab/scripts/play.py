@@ -223,6 +223,24 @@ def run_play(task_id: str, cfg: PlayConfig):
       return
     policy = runner.get_inference_policy(device=device)
 
+  # DELTA exposes its attention overlay through the policy model.  Keep the
+  # reference on the unwrapped environment so both Viser and native debug
+  # visualizers can draw the latest sampling points without changing the
+  # observation/action API.  Other policies simply pass through unchanged.
+  def _attach_delta_debug(policy_obj):
+    model = policy_obj
+    for attr in ("actor", "model"):
+      candidate = getattr(model, attr, None)
+      if candidate is not None and hasattr(candidate, "enable_attention_cache"):
+        model = candidate
+        break
+    if hasattr(model, "enable_attention_cache"):
+      model.enable_attention_cache(True)
+      env.unwrapped.debug_policy = model
+      env.unwrapped.delta_attention_enabled = True
+
+  _attach_delta_debug(policy)
+
   # Build checkpoint manager for hot-swapping checkpoints in the viewer.
   ckpt_manager: CheckpointManager | None = None
   if TRAINED_MODE and resume_path is not None:
@@ -235,7 +253,9 @@ def run_play(task_id: str, cfg: PlayConfig):
         strict=True,
         map_location=device,
       )
-      return _ckpt_runner.get_inference_policy(device=device)
+      reloaded = _ckpt_runner.get_inference_policy(device=device)
+      _attach_delta_debug(reloaded)
+      return reloaded
 
     if cfg.wandb_run_path is None:
       ckpt_dir = resume_path.parent

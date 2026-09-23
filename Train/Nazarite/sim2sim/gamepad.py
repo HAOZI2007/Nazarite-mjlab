@@ -78,6 +78,17 @@ def resolve_axis(axis: str | int) -> int:
     return value
 
 
+def resolve_button(button: str | int) -> int:
+    """Resolve an evdev button name such as ``BTN_TR``."""
+    if isinstance(button, int):
+        return button
+    button = button.upper()
+    value = getattr(ecodes, button, None)
+    if not isinstance(value, int) or not button.startswith("BTN_"):
+        raise ValueError(f"Unknown button {button!r}; use names such as BTN_TR")
+    return value
+
+
 def normalize_axis(value: int, minimum: int, maximum: int, deadzone: float) -> float:
     """Normalize an evdev stick value to [-1, 1], applying a centered deadzone."""
     if maximum <= minimum:
@@ -139,6 +150,7 @@ class GamepadController:
         self.axis_vy = resolve_axis(axis_vy)
         self.axis_yaw = resolve_axis(axis_yaw)
         self._axis_values: dict[int, int] = {}
+        self._pressed_buttons: set[int] = set()
         self._axis_ranges = self._read_axis_ranges()
         self._disconnected = False
 
@@ -176,6 +188,8 @@ class GamepadController:
             for event in self.device.read():
                 if event.type == ecodes.EV_ABS and event.code in self._axis_ranges:
                     self._axis_values[event.code] = event.value
+                elif event.type == ecodes.EV_KEY and event.value in (1, 2):
+                    self._pressed_buttons.add(int(event.code))
         except BlockingIOError:
             pass
         except OSError:
@@ -192,6 +206,21 @@ class GamepadController:
     def _normalized(self, axis: int) -> float:
         minimum, maximum = self._axis_ranges[axis]
         return normalize_axis(self._axis_values[axis], minimum, maximum, self.deadzone)
+
+    def normalized_axis(self, axis: str | int) -> float | None:
+        """Read an optional centered axis, returning ``None`` if unavailable."""
+        code = resolve_axis(axis)
+        if code not in self._axis_ranges:
+            return None
+        return self._normalized(code)
+
+    def consume_button(self, button: str | int) -> bool:
+        """Consume one pressed-button event since the previous poll."""
+        code = resolve_button(button)
+        if code in self._pressed_buttons:
+            self._pressed_buttons.remove(code)
+            return True
+        return False
 
     def close(self) -> None:
         try:

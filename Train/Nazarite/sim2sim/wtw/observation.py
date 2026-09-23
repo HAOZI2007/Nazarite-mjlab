@@ -11,6 +11,7 @@ from ..mujoco_io import MuJoCoIO
 from ..observation import build_actor_terms
 from .config import (
     BEHAVIOR,
+    BEHAVIOR_NOMINAL,
     OBS_DIM,
     OBSERVATION_NAMES,
     PHASE_COMMAND_THRESHOLD,
@@ -45,6 +46,7 @@ class WTWObservationBuilder:
 
     def reset(self) -> None:
         self.base_phase = 0.0
+        self.behavior[:] = BEHAVIOR_NOMINAL
         for history in self.histories.values():
             history.clear()
 
@@ -85,9 +87,14 @@ class WTWObservationBuilder:
             self.base_phase = (self.base_phase + frequency * dt) % 1.0
 
     def phase_reference(self) -> np.ndarray:
-        # The selected policy uses trot: theta=[0.5, 0, 0] maps to
-        # [FL, FR, RL, RR] offsets [0.5, 0, 0, 0.5].
-        phase = (self.base_phase + np.array([0.5, 0.0, 0.0, 0.5])) % 1.0
+        # Convert theta to [FL, FR, RL, RR] offsets using the training code's
+        # convention. Trot remains fixed at theta=[0.5, 0, 0].
+        theta1, theta2, theta3 = self.behavior[:3]
+        offsets = np.array(
+            [theta1 + theta3, theta2 + theta3, theta2, theta1],
+            dtype=np.float32,
+        )
+        phase = (self.base_phase + offsets) % 1.0
         angle = 2.0 * np.pi * phase
         sin_phase = np.sin(angle).astype(np.float32)
         cos_phase = np.cos(angle).astype(np.float32)

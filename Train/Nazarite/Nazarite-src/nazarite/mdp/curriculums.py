@@ -5,12 +5,13 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-
 _DEFAULT_SCENE_CFG = SceneEntityCfg("robot")
 
 
 def terrain_levels_vel_strict(
-  env, env_ids: torch.Tensor, command_name: str,
+  env,
+  env_ids: torch.Tensor,
+  command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_SCENE_CFG,
 ):
   """Advance terrain levels without impossible distance requirements.
@@ -61,4 +62,162 @@ def terrain_levels_vel_strict(
   return result
 
 
-__all__ = ["terrain_levels_vel_strict"]
+def terrain_levels_delta(
+  env,
+  env_ids: torch.Tensor,
+  command_name: str,
+  success_distance_scale: float = 0.8,
+  min_success_distance: float = 0.8,
+  max_success_distance: float = 3.2,
+  success_streak_length: int = 2,
+  failure_streak_length: int = 3,
+  sparse_terrain_names: tuple[str, ...] = (),
+  sparse_success_distance_scale: float = 0.5,
+  sparse_min_success_distance: float = 0.5,
+  sparse_max_success_distance: float = 1.2,
+  sparse_success_streak_length: int = 3,
+  sparse_failure_streak_length: int = 4,
+  sparse_max_level: int | None = None,
+):
+  """DELTA curriculum with a gentle, type-aware sparse-terrain branch.
+
+  This hook runs immediately before an automatic reset.  The counters are kept
+  per environment, while the terrain row is changed directly. Continuous
+  terrains use the normal two-success/three-failure rule. Sparse terrains use
+  a shorter early success distance and a conservative level cap until the
+  residual policy demonstrates repeatable traversals.
+  """
+  if success_streak_length < 1 or failure_streak_length < 1:
+    raise ValueError("Curriculum streak lengths must be positive.")
+  if sparse_success_streak_length < 1 or sparse_failure_streak_length < 1:
+    raise ValueError("Sparse curriculum streak lengths must be positive.")
+  terrain = env.scene.terrain
+  assert terrain is not None and terrain.terrain_origins is not None
+  generator = terrain.cfg.terrain_generator
+  assert generator is not None
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  terrain_names = list(generator.sub_terrains.keys())
+
+  success_streak = getattr(env, "_delta_success_streak", None)
+  failure_streak = getattr(env, "_delta_failure_streak", None)
+  if success_streak is None or success_streak.shape[0] != env.num_envs:
+    success_streak = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+    failure_streak = torch.zeros_like(success_streak)
+    env._delta_success_streak = success_streak
+    env._delta_failure_streak = failure_streak
+
+  if env.common_step_counter == 0:
+    success_streak[env_ids] = 0
+    failure_streak[env_ids] = 0
+    levels = terrain.terrain_levels.float()
+    return {"mean": levels.mean(), "max": levels.max()}
+
+  asset: Entity = env.scene["robot"]
+  distance = torch.linalg.vector_norm(
+    asset.data.root_link_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2],
+    dim=1,
+  )
+  command_speed = torch.linalg.vector_norm(command[env_ids, :2], dim=1)
+  sparse_indices = {
+    terrain_names.index(name) for name in sparse_terrain_names if name in terrain_names
+  }
+  sparse = torch.zeros_like(terrain.terrain_types[env_ids], dtype=torch.bool)
+  for terrain_index in sparse_indices:
+    sparse |= terrain.terrain_types[env_ids] == terrain_index
+  normal_scale = command_speed.new_full(command_speed.shape, float(success_distance_scale))
+  normal_min = command_speed.new_full(command_speed.shape, float(min_success_distance))
+  normal_max = command_speed.new_full(command_speed.shape, float(max_success_distance))
+  sparse_scale = command_speed.new_full(
+    command_speed.shape, float(sparse_success_distance_scale)
+  )
+  sparse_min = command_speed.new_full(command_speed.shape, float(sparse_min_success_distance))
+  sparse_max = command_speed.new_full(command_speed.shape, float(sparse_max_success_distance))
+  scale = torch.where(sparse, sparse_scale, normal_scale)
+  target_min = torch.where(sparse, sparse_min, normal_min)
+  target_max = torch.where(sparse, sparse_max, normal_max)
+  target = (command_speed * env.max_episode_length_s * scale).clamp(
+    min=target_min, max=target_max
+  )
+  active = command_speed > 0.1
+  terminated = env.reset_terminated[env_ids]
+  success = active & ~terminated & (distance >= target)
+  failure = active & ~success
+
+  success_streak[env_ids] = torch.where(
+    success, success_streak[env_ids] + 1, torch.zeros_like(success_streak[env_ids])
+  )
+  failure_streak[env_ids] = torch.where(
+    failure, failure_streak[env_ids] + 1, torch.zeros_like(failure_streak[env_ids])
+  )
+  success_required = torch.where(
+    sparse,
+    torch.full_like(success_streak[env_ids], int(sparse_success_streak_length)),
+    torch.full_like(success_streak[env_ids], int(success_streak_length)),
+  )
+  failure_required = torch.where(
+    sparse,
+    torch.full_like(failure_streak[env_ids], int(sparse_failure_streak_length)),
+    torch.full_like(failure_streak[env_ids], int(failure_streak_length)),
+  )
+  move_up = success_streak[env_ids] >= success_required
+  move_down = failure_streak[env_ids] >= failure_required
+  old_levels = terrain.terrain_levels[env_ids]
+  new_levels = old_levels.clone()
+  if sparse_max_level is None:
+    sparse_cap = terrain.max_terrain_level - 1
+  else:
+    sparse_cap = max(0, min(int(sparse_max_level), terrain.max_terrain_level - 1))
+  max_allowed = torch.where(
+    sparse,
+    torch.full_like(old_levels, sparse_cap),
+    torch.full_like(old_levels, terrain.max_terrain_level - 1),
+  )
+
+  if move_up.any():
+    up_ids = move_up.nonzero(as_tuple=False).flatten()
+    highest = old_levels[up_ids] >= max_allowed[up_ids]
+    up_sparse = sparse[up_ids]
+    regular = up_ids[~highest]
+    new_levels[regular] += 1
+    # Sparse terrain stays at its cap once it is mastered.  Continuous terrain
+    # retains the paper-style restart from a low/high row after reaching the
+    # final row.
+    sparse_high = up_ids[highest & up_sparse]
+    normal_high = up_ids[highest & ~up_sparse]
+    if normal_high.numel() > 0:
+      restart_low = torch.rand(len(normal_high), device=env.device) < 0.2
+      restart_high = torch.randint(
+        5, terrain.max_terrain_level, (len(normal_high),), device=env.device
+      )
+      new_levels[normal_high] = torch.where(
+        restart_low, torch.zeros_like(restart_high), restart_high
+      )
+    if sparse_high.numel() > 0:
+      new_levels[sparse_high] = max_allowed[sparse_high]
+  new_levels = torch.where(
+    move_down, torch.clamp(old_levels - 1, min=0), new_levels
+  )
+  new_levels = torch.minimum(new_levels, max_allowed)
+  terrain.terrain_levels[env_ids] = new_levels
+  terrain.env_origins[env_ids] = terrain.terrain_origins[
+    terrain.terrain_levels[env_ids], terrain.terrain_types[env_ids]
+  ]
+  success_streak[env_ids] = torch.where(
+    move_up, torch.zeros_like(success_streak[env_ids]), success_streak[env_ids]
+  )
+  failure_streak[env_ids] = torch.where(
+    move_down, torch.zeros_like(failure_streak[env_ids]), failure_streak[env_ids]
+  )
+
+  levels = terrain.terrain_levels.float()
+  result = {"mean": levels.mean(), "max": levels.max()}
+  if terrain.terrain_origins.shape[1] == len(terrain_names):
+    for i, name in enumerate(terrain_names):
+      mask = terrain.terrain_types == i
+      if mask.any():
+        result[name] = levels[mask].mean()
+  return result
+
+
+__all__ = ["terrain_levels_delta", "terrain_levels_vel_strict"]

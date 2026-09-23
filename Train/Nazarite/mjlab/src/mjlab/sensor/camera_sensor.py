@@ -65,6 +65,16 @@ class CameraSensorCfg(SensorCfg):
   fovy: float | None = None
   """Vertical field of view in degrees. None uses MuJoCo default."""
 
+  focal_length_px: tuple[float, float] | None = None
+  """Perspective focal lengths ``(fx, fy)`` in pixels.
+
+  Must be provided together with :attr:`principal_point_px`. When set, these
+  intrinsic parameters take precedence over ``fovy``.
+  """
+
+  principal_point_px: tuple[float, float] | None = None
+  """Perspective principal point ``(cx, cy)`` in pixels."""
+
   width: int = 160
   """Image width in pixels."""
 
@@ -100,6 +110,16 @@ class CameraSensorCfg(SensorCfg):
       raise ValueError(f"Invalid camera data types: {invalid}. Valid types: {valid}")
     if not self.data_types:
       raise ValueError("At least one data type must be specified.")
+    has_focal = self.focal_length_px is not None
+    has_principal = self.principal_point_px is not None
+    if has_focal != has_principal:
+      raise ValueError(
+        "focal_length_px and principal_point_px must be provided together"
+      )
+    if self.focal_length_px is not None and any(
+      value <= 0.0 for value in self.focal_length_px
+    ):
+      raise ValueError("focal_length_px values must be positive")
 
   def build(self) -> CameraSensor:
     return CameraSensor(self)
@@ -162,7 +182,9 @@ class CameraSensor(Sensor[CameraSensorData]):
     if self._is_wrapping_existing:
       cam = scene_spec.camera(self._camera_name)
       assert isinstance(cam, mujoco.MjsCamera)
-      if self.cfg.fovy is not None:
+      if self.cfg.focal_length_px is not None:
+        self._apply_pixel_intrinsics(cam)
+      elif self.cfg.fovy is not None:
         cam.fovy = self.cfg.fovy
       if self.cfg.orthographic:
         cam.proj = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
@@ -178,7 +200,7 @@ class CameraSensor(Sensor[CameraSensorData]):
       if self.cfg.orthographic
       else mujoco.mjtProjection.mjPROJ_PERSPECTIVE
     )
-    parent.add_camera(
+    cam = parent.add_camera(
       name=self.cfg.name,
       pos=self.cfg.pos,
       quat=self.cfg.quat,
@@ -186,6 +208,20 @@ class CameraSensor(Sensor[CameraSensorData]):
       resolution=[self.cfg.width, self.cfg.height],
       proj=proj,
     )
+    if self.cfg.focal_length_px is not None:
+      self._apply_pixel_intrinsics(cam)
+
+  def _apply_pixel_intrinsics(self, cam: mujoco.MjsCamera) -> None:
+    """Configure MuJoCo's physical camera model from pixel intrinsics."""
+    assert self.cfg.focal_length_px is not None
+    assert self.cfg.principal_point_px is not None
+    cam.resolution = [self.cfg.width, self.cfg.height]
+    # MuJoCo requires a non-zero physical sensor size for focal/principal
+    # parameters. Unit dimensions are sufficient because focal_pixel and
+    # principal_pixel are converted consistently during model compilation.
+    cam.sensor_size = [1.0, 1.0]
+    cam.focal_pixel = self.cfg.focal_length_px
+    cam.principal_pixel = self.cfg.principal_point_px
 
   def initialize(
     self,

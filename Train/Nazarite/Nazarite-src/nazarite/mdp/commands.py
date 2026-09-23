@@ -114,6 +114,173 @@ class GridAdaptiveVelocityCommandCfg(UniformVelocityCommandCfg):
       )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ScheduledVelocityStageCfg:
+  """Velocity range used after a global environment-step boundary."""
+
+  step: int
+  lin_vel_x: tuple[float, float]
+  lin_vel_y: tuple[float, float]
+  ang_vel_z: tuple[float, float]
+
+
+@dataclass(kw_only=True)
+class ScheduledVelocityCommandCfg(UniformVelocityCommandCfg):
+  """Velocity command whose range is widened at fixed training milestones."""
+
+  stages: tuple[ScheduledVelocityStageCfg, ...] = ()
+
+  def build(self, env: ManagerBasedRlEnv) -> ScheduledVelocityCommand:
+    return ScheduledVelocityCommand(self, env)
+
+  def __post_init__(self) -> None:
+    super().__post_init__()
+    if self.heading_command or self.rel_heading_envs != 0.0:
+      raise ValueError(
+        "ScheduledVelocityCommand requires heading_command=False and "
+        "rel_heading_envs=0.0."
+      )
+    previous_step = -1
+    for stage in self.stages:
+      if stage.step < 0 or stage.step < previous_step:
+        raise ValueError("Scheduled velocity stage steps must be increasing.")
+      previous_step = stage.step
+      for name, value in (
+        ("lin_vel_x", stage.lin_vel_x),
+        ("lin_vel_y", stage.lin_vel_y),
+        ("ang_vel_z", stage.ang_vel_z),
+      ):
+        if value[1] < value[0]:
+          raise ValueError(f"{name} range must be increasing, got {value}.")
+
+
+class ScheduledVelocityCommand(UniformVelocityCommand):
+  """Uniform command sampling with a range selected by global training steps."""
+
+  cfg: ScheduledVelocityCommandCfg
+
+  def __init__(
+    self, cfg: ScheduledVelocityCommandCfg, env: ManagerBasedRlEnv
+  ) -> None:
+    super().__init__(cfg, env)
+    self.cfg = cfg
+    self.metrics["velocity_stage"] = torch.zeros(self.num_envs, device=self.device)
+
+  def _stage_index(self) -> int:
+    index = 0
+    for i, stage in enumerate(self.cfg.stages):
+      if self._env.common_step_counter >= stage.step:
+        index = i
+      else:
+        break
+    return index
+
+  def _active_ranges(
+    self,
+  ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    if not self.cfg.stages:
+      return (
+        self.cfg.ranges.lin_vel_x,
+        self.cfg.ranges.lin_vel_y,
+        self.cfg.ranges.ang_vel_z,
+      )
+    stage = self.cfg.stages[self._stage_index()]
+    return stage.lin_vel_x, stage.lin_vel_y, stage.ang_vel_z
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    x_range, y_range, yaw_range = self._active_ranges()
+    r = torch.empty(len(env_ids), device=self.device)
+    self.vel_command_b[env_ids, 0] = r.uniform_(*x_range)
+    self.vel_command_b[env_ids, 1] = r.uniform_(*y_range)
+    self.vel_command_b[env_ids, 2] = r.uniform_(*yaw_range)
+    self.is_standing_env[env_ids] = (
+      r.uniform_(0.0, 1.0) <= self.cfg.rel_standing_envs
+    )
+    self.is_world_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_world_envs
+    self.vel_command_w[env_ids] = self.vel_command_b[env_ids]
+    self.is_forward_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_forward_envs
+    forward_ids = env_ids[self.is_forward_env[env_ids]]
+    if len(forward_ids) > 0:
+      self.vel_command_b[forward_ids, 0] = (
+        self.vel_command_b[forward_ids, 0].abs().clamp(min=0.3)
+      )
+      self.vel_command_b[forward_ids, 1:] = 0.0
+    self.metrics["velocity_stage"][env_ids] = float(self._stage_index())
+
+
+@dataclass(kw_only=True)
+class TerrainConditionedVelocityCommandCfg(ScheduledVelocityCommandCfg):
+  """Scheduled velocity command with terrain-specific forward-only ranges.
+
+  The normal ranges and scheduled stages apply to every terrain.  Environments
+  whose terrain column name is listed in ``forward_only_terrain_names`` receive
+  a positive forward-x command with zero lateral and yaw velocity instead.
+  """
+
+  forward_only_terrain_names: tuple[str, ...] = ()
+  """Terrain generator columns that should only be traversed in +x."""
+  forward_only_x_min: float = 0.1
+  """Lower bound for positive x commands on the selected terrains."""
+
+  def build(self, env: ManagerBasedRlEnv) -> TerrainConditionedVelocityCommand:
+    return TerrainConditionedVelocityCommand(self, env)
+
+  def __post_init__(self) -> None:
+    super().__post_init__()
+    if self.forward_only_x_min < 0.0:
+      raise ValueError("forward_only_x_min must be non-negative")
+
+
+class TerrainConditionedVelocityCommand(ScheduledVelocityCommand):
+  """Apply forward-only commands only to configured terrain columns."""
+
+  cfg: TerrainConditionedVelocityCommandCfg
+
+  def __init__(
+    self, cfg: TerrainConditionedVelocityCommandCfg, env: ManagerBasedRlEnv
+  ) -> None:
+    super().__init__(cfg, env)
+    self.cfg = cfg
+    self._forward_only_envs = torch.zeros(
+      self.num_envs, dtype=torch.bool, device=self.device
+    )
+
+    if cfg.forward_only_terrain_names:
+      terrain = env.scene["terrain"]
+      terrain_cfg = terrain.cfg.terrain_generator
+      if terrain_cfg is None:
+        raise ValueError(
+          "forward_only_terrain_names requires a generated terrain scene"
+        )
+      terrain_names = list(terrain_cfg.sub_terrains)
+      missing = set(cfg.forward_only_terrain_names) - set(terrain_names)
+      if missing:
+        raise ValueError(
+          "Unknown forward-only terrain names: " + ", ".join(sorted(missing))
+        )
+      selected_types = torch.tensor(
+        [terrain_names.index(name) for name in cfg.forward_only_terrain_names],
+        dtype=terrain.terrain_types.dtype,
+        device=self.device,
+      )
+      self._forward_only_envs = torch.isin(terrain.terrain_types, selected_types)
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    super()._resample_command(env_ids)
+    selected_ids = env_ids[self._forward_only_envs[env_ids]]
+    if len(selected_ids) == 0:
+      return
+
+    x_range, _, _ = self._active_ranges()
+    x_low = max(float(self.cfg.forward_only_x_min), 0.0)
+    x_high = max(float(x_range[1]), x_low)
+    r = torch.empty(len(selected_ids), device=self.device)
+    self.vel_command_b[selected_ids, 0] = r.uniform_(x_low, x_high)
+    self.vel_command_b[selected_ids, 1:] = 0.0
+    self.vel_command_w[selected_ids] = self.vel_command_b[selected_ids]
+    self.is_forward_env[selected_ids] = True
+
+
 class GridAdaptiveVelocityCommand(UniformVelocityCommand):
   """使用激活网格均匀采样，并根据成功率扩展四连通邻居。"""
 
@@ -178,8 +345,12 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
     self._segment_steps = torch.zeros(
       self.num_envs, dtype=torch.long, device=self.device
     )
-    self.metrics["grid_error_vel_xy"] = torch.zeros(self.num_envs, device=self.device)
-    self.metrics["grid_error_vel_yaw"] = torch.zeros(self.num_envs, device=self.device)
+    self.metrics["grid_error_vel_xy"] = torch.zeros(
+      self.num_envs, device=self.device
+    )
+    self.metrics["grid_error_vel_yaw"] = torch.zeros(
+      self.num_envs, device=self.device
+    )
     self.metrics["grid_success"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["grid_gait_schedule_error"] = torch.zeros(
       self.num_envs, device=self.device
@@ -223,7 +394,9 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
 
   def _sample_cells(self, env_ids: torch.Tensor) -> None:
     """从激活 cell 中均匀采样指定环境的 cell。"""
-    active_ids = torch.nonzero(self.active_cells.flatten(), as_tuple=False).flatten()
+    active_ids = torch.nonzero(
+      self.active_cells.flatten(), as_tuple=False
+    ).flatten()
     if len(active_ids) == 0:
       raise RuntimeError("Grid Adaptive Curriculum has no active cells.")
 
@@ -320,23 +493,20 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
 
     desired_contact = (
       normal_cdf(phase) * (1.0 - normal_cdf(phase - duty))
-      + normal_cdf(phase - 1.0)
-      * (1.0 - normal_cdf(phase - duty - 1.0))
+      + normal_cdf(phase - 1.0) * (1.0 - normal_cdf(phase - duty - 1.0))
     ).clamp(0.0, 1.0)
     actual_contact = (found > 0).to(dtype=desired_contact.dtype)
     schedule_error = torch.abs(actual_contact - desired_contact).mean(dim=1)
 
     # 非同步 gait 本来就不应让四脚接触相同，因此只在四腿期望接触几乎
     # 相同的 Pronking 类时计算同步门槛；其他 gait 的这两个量为零。
-    synchronous = (
-      desired_contact.amax(dim=1) - desired_contact.amin(dim=1) < 1.0e-3
+    synchronous = desired_contact.amax(dim=1) - desired_contact.amin(dim=1) < 1.0e-3
+    sync_error = (
+      torch.abs(actual_contact[:, 1:] - actual_contact[:, :1]).mean(dim=1)
+      * synchronous
     )
-    sync_error = torch.abs(
-      actual_contact[:, 1:] - actual_contact[:, :1]
-    ).mean(dim=1) * synchronous
-    high_confidence = (
-      (desired_contact.mean(dim=1) > 0.9)
-      | (desired_contact.mean(dim=1) < 0.1)
+    high_confidence = (desired_contact.mean(dim=1) > 0.9) | (
+      desired_contact.mean(dim=1) < 0.1
     )
     mixed_contact = (
       1.0 - actual_contact.prod(dim=1) - (1.0 - actual_contact).prod(dim=1)
@@ -379,9 +549,7 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
       return
     # standing 任务不参与速度网格难度评估，否则大量零速度成功会虚高
     # 非零速度 cell 的成功率，造成 curriculum 过早扩展。
-    valid = (self._segment_steps[env_ids] > 0) & (
-      ~self.is_standing_env[env_ids]
-    )
+    valid = (self._segment_steps[env_ids] > 0) & (~self.is_standing_env[env_ids])
     # 没有可用于网格统计的 segment 时，清理当前段状态后直接返回。
     if not valid.any():
       self._segment_error_xy[env_ids] = 0.0
@@ -403,7 +571,9 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
     # 提前摔倒算失败；正常 time_out 不直接算失败，由跟踪误差判定。
     terminated = getattr(self._env, "reset_terminated", None)
     if terminated is None:
-      terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+      terminated = torch.zeros(
+        self.num_envs, dtype=torch.bool, device=self.device
+      )
     success = (
       ~terminated[settled_ids]
       & (mean_xy <= self._grid_cfg.velocity_error_threshold)
@@ -412,7 +582,9 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
     # 可选的 gait-aware gate：只要配置阈值，课程就不会把“速度能跟上、
     # 但仍是错峰 trot”的命令段判成 Pronking 成功。
     if self._grid_cfg.gait_schedule_error_threshold is not None:
-      success &= mean_schedule_error <= self._grid_cfg.gait_schedule_error_threshold
+      success &= (
+        mean_schedule_error <= self._grid_cfg.gait_schedule_error_threshold
+      )
     if self._grid_cfg.gait_sync_error_threshold is not None:
       success &= mean_sync_error <= self._grid_cfg.gait_sync_error_threshold
     if self._grid_cfg.gait_mixed_contact_threshold is not None:
@@ -423,7 +595,9 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
     cell_yaw = self.current_cell[settled_ids, 1]
     ones = torch.ones_like(cell_x, dtype=torch.long)
     self.cell_visits.index_put_((cell_x, cell_yaw), ones, accumulate=True)
-    self.cell_successes.index_put_((cell_x, cell_yaw), success.long(), accumulate=True)
+    self.cell_successes.index_put_(
+      (cell_x, cell_yaw), success.long(), accumulate=True
+    )
     self._record_recent_results(cell_x, cell_yaw, success)
     self._expand_ready_cells()
 
@@ -456,9 +630,10 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
     # 访问量和成功率验证前，会阻止已经成熟的旧 cell 继续向外扩张。
     # 否则在大规模并行环境中，中心 cell 往往会在相邻两次 reset 中迅速
     # 打开多个方向，导致“新速度格尚未验证，课程已全部展开”。
-    if self._grid_cfg.require_all_active_cells_ready and (
-      self.active_cells & ~ready
-    ).any():
+    if (
+      self._grid_cfg.require_all_active_cells_ready
+      and (self.active_cells & ~ready).any()
+    ):
       return
 
     # 使用确定性顺序选取候选 cell，保证相同 checkpoint 能复现实验轨迹。
@@ -554,9 +729,15 @@ class GridAdaptiveVelocityCommand(UniformVelocityCommand):
       "is_forward_env": self.is_forward_env.detach().cpu().clone(),
       "segment_error_xy": self._segment_error_xy.detach().cpu().clone(),
       "segment_error_yaw": self._segment_error_yaw.detach().cpu().clone(),
-      "segment_gait_schedule_error": self._segment_gait_schedule_error.detach().cpu().clone(),
-      "segment_gait_sync_error": self._segment_gait_sync_error.detach().cpu().clone(),
-      "segment_gait_mixed_contact": self._segment_gait_mixed_contact.detach().cpu().clone(),
+      "segment_gait_schedule_error": self._segment_gait_schedule_error.detach()
+      .cpu()
+      .clone(),
+      "segment_gait_sync_error": self._segment_gait_sync_error.detach()
+      .cpu()
+      .clone(),
+      "segment_gait_mixed_contact": self._segment_gait_mixed_contact.detach()
+      .cpu()
+      .clone(),
       "segment_steps": self._segment_steps.detach().cpu().clone(),
       "last_expansion_step": self._last_expansion_step,
     }

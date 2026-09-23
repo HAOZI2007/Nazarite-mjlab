@@ -84,6 +84,10 @@ class OnPolicyRunner:
         total_it = start_it + num_learning_iterations
         for it in range(start_it, total_it):
             start = time.time()
+            policy = self.alg.get_policy()
+            set_iteration = getattr(policy, "set_training_iteration", None)
+            if set_iteration is not None:
+                set_iteration(it)
             # Rollout
             with torch.inference_mode():
                 for _ in range(self.cfg["num_steps_per_env"]):
@@ -113,6 +117,11 @@ class OnPolicyRunner:
             # Update policy
             loss_dict = self.alg.update()
 
+            diagnostics = None
+            get_diagnostics = getattr(policy, "get_diagnostics", None)
+            if get_diagnostics is not None:
+                diagnostics = get_diagnostics()
+
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
@@ -128,6 +137,7 @@ class OnPolicyRunner:
                 learning_rate=self.alg.learning_rate,
                 action_std=self.alg.get_policy().output_std,
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"]["rnd_cfg"] else None,
+                diagnostics=diagnostics,
             )
 
             # Save model

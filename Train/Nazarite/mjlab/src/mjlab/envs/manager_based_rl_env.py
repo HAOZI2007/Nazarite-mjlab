@@ -543,6 +543,13 @@ class ManagerBasedRlEnv:
       mod.debug_vis(visualizer)
     for sensor in self.scene.sensors.values():
       sensor.debug_vis(visualizer)
+    # Optional policy-owned overlays (currently DELTA attention).  Keeping
+    # this hook generic avoids coupling the environment to the Nazarite model
+    # package while making the same overlay available to Viser and native
+    # viewers.
+    debug_policy = getattr(self, "debug_policy", None)
+    if debug_policy is not None and hasattr(debug_policy, "debug_visualize"):
+      debug_policy.debug_visualize(self, visualizer)
 
   # Private methods.
 

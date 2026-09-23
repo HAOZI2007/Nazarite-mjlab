@@ -87,17 +87,27 @@ of view in degrees) combined with the image resolution defines the
 projection. This is the default when creating cameras
 programmatically via ``CameraSensorCfg``.
 
-**Intrinsic-based.** For matching real camera hardware, MuJoCo cameras
-can be parameterized with ``sensorsize``, ``focal`` (or
-``focalpixel``), and ``principal`` (or ``principalpixel``). These
-fields are set in the MJCF XML and provide direct control over the
-intrinsic matrix. When intrinsic parameters are present, ``fovy`` is
-ignored by MuJoCo.
+**Intrinsic-based.** For matching real camera hardware, pass
+``focal_length_px=(fx, fy)`` and ``principal_point_px=(cx, cy)`` to
+``CameraSensorCfg``. These values are expressed in pixels at the configured
+``width`` and ``height``. MuJoCo then uses its intrinsic camera model and
+ignores ``fovy``.
 
 When wrapping an existing camera, the sensor inherits whichever
-parameterization the XML defines. When creating a new camera, the
-sensor uses ``fovy``. To use intrinsic parameters for a new camera,
-define it in your XML and wrap it with ``camera_name``.
+parameterization the XML defines unless an intrinsic or ``fovy`` override is
+provided.
+
+.. code-block:: python
+
+    CameraSensorCfg(
+        name="calibrated_depth",
+        parent_body="robot/base",
+        width=848,
+        height=480,
+        focal_length_px=(420.54, 420.54),
+        principal_point_px=(428.09, 238.03),
+        data_types=("depth",),
+    )
 
 .. note::
 

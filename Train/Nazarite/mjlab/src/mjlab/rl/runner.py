@@ -24,8 +24,24 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     # Strip None-valued optional configs so MLPModel doesn't receive them.
     for key in ("actor", "critic"):
       if key in train_cfg:
-        for opt in ("cnn_cfg", "distribution_cfg"):
+        model_class = train_cfg[key].get("class_name", "")
+        for opt in (
+          "cnn_cfg", "distribution_cfg", "proprio_dim", "map_height", "map_width",
+          "map_channels", "map_extent", "map_center", "forward_x_threshold",
+        ):
           if train_cfg[key].get(opt) is None:
+            train_cfg[key].pop(opt, None)
+        if model_class not in (
+          "nazarite.delta.wtw_delta_model:WtwDeltaResidualModel",
+          "nazarite.delta.rsl_model:DeltaModel",
+        ):
+          for opt in (
+            "prior_group", "delta_map_group", "delta_proprio_group",
+            "residual_hidden_dims", "residual_scale", "residual_scale_start",
+            "residual_scale_ramp_iters", "wtw_checkpoint", "freeze_wtw",
+            "residual_joint_scales", "residual_gate_bias",
+            "residual_activation",
+          ):
             train_cfg[key].pop(opt, None)
         if train_cfg[key].get("rnn_type") is None:
           for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):

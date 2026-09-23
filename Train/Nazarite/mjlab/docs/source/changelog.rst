@@ -67,6 +67,9 @@ Added
 Changed
 ^^^^^^^
 
+- DELTA now uses an eight-family, ten-level terrain curriculum with two-success
+  promotion and three-failure demotion, plus scheduled velocity ranges that
+  widen at fixed training iterations.
 - Bumped ``mujoco`` and ``mujoco-warp`` from 3.10 to 3.11, and regenerated the
   bundled MuJoCo type stubs.
 - Bumped ``rsl-rl-lib`` from 5.4.0 to 5.4.2.

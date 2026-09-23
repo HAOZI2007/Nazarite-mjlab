@@ -10,6 +10,7 @@ from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
+from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.tasks.velocity.mdp.terrain_utils import terrain_normal_from_sensors
 from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
 
@@ -63,7 +64,9 @@ def _command_is_active(
 ) -> torch.Tensor:
   """计算每个 environment 是否存在有效的非零 velocity command."""
   threshold = max(float(command_threshold), 0.0)
-  magnitude = torch.linalg.vector_norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  magnitude = torch.linalg.vector_norm(command[:, :2], dim=1) + torch.abs(
+    command[:, 2]
+  )
   return (magnitude > threshold).to(dtype=command.dtype)
 
 
@@ -221,6 +224,23 @@ def base_height_reward(
   return _safe_tensor(reward, limit=1.0)
 
 
+def low_base_height_penalty(
+  env: ManagerBasedRlEnv,
+  minimum_height: float = 0.27,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize only a crouched base, without constraining uphill motion.
+
+  A symmetric target-height reward is undesirable on slopes because the
+  world-frame base height naturally changes with terrain elevation.  This
+  one-sided term therefore activates only below ``minimum_height`` and is
+  suitable for DELTA's rough-terrain curriculum.
+  """
+  height = safe_base_height(env, asset_cfg).squeeze(-1)
+  deficit = torch.relu(float(minimum_height) - height)
+  return _safe_tensor(deficit.square(), limit=_SAFE_REWARD_LIMIT)
+
+
 def safe_foot_height(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
   """安全读取足端 foot height, 清理 NaN/Inf 并限制最大高度."""
   from mjlab.tasks.velocity.mdp.observations import foot_height
@@ -268,7 +288,7 @@ def safe_foot_contact_forces(
   return _safe_tensor(result, limit=100.0)
 
 
-#速度追踪奖励计算函数
+# 速度追踪奖励计算函数
 def track_linear_velocity(
   env: ManagerBasedRlEnv,
   std: float,
@@ -330,6 +350,7 @@ def track_yaw_velocity(
   error = torch.square(command[:, 2] - actual[:, 2])
   return _safe_tensor(torch.exp(-error / _safe_std(std) ** 2), limit=1.0)
 
+
 # 角度 (自转) 追踪奖励计算函数
 def track_angular_velocity(
   env: ManagerBasedRlEnv,
@@ -347,7 +368,8 @@ def track_angular_velocity(
   reward = torch.exp(-(z_error + xy_error) / _safe_std(std) ** 2)
   return _safe_tensor(reward, limit=1.0)
 
-#机身水平保持奖励计算函数
+
+# 机身水平保持奖励计算函数
 class upright:
   """计算保持机器人 base upright 的 reward.
 
@@ -363,7 +385,9 @@ class upright:
     )
     self._debug_vis_enabled = True
     self._env = env
-    self._asset_cfg: SceneEntityCfg = cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG)
+    self._asset_cfg: SceneEntityCfg = cfg.params.get(
+      "asset_cfg", _DEFAULT_ASSET_CFG
+    )
 
   def __call__(
     self,
@@ -421,9 +445,9 @@ class upright:
 
     terrain_normal = terrain_normal_from_sensors(env, self._terrain_sensor_names)
     if self._asset_cfg.body_ids:
-      body_quat_w = asset.data.body_link_quat_w[:, self._asset_cfg.body_ids, :].squeeze(
-        1
-      )
+      body_quat_w = asset.data.body_link_quat_w[
+        :, self._asset_cfg.body_ids, :
+      ].squeeze(1)
     else:
       body_quat_w = asset.data.root_link_quat_w
     up_local = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand_as(
@@ -454,7 +478,8 @@ class upright:
         width=0.01,
       )
 
-#平地姿态保持函数
+
+# 平地姿态保持函数
 def flat_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -465,7 +490,8 @@ def flat_orientation_l2(
   cost = torch.sum(torch.square(projected_gravity[:, :2]), dim=1)
   return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
-#抑制 roll/pitch 机身晃动
+
+# 抑制 roll/pitch 机身晃动
 def body_angular_velocity_penalty(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -480,7 +506,8 @@ def body_angular_velocity_penalty(
   cost = torch.mean(cost_per_body, dim=1)
   return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
-#腿部软着陆奖励计算函数
+
+# 腿部软着陆奖励计算函数
 def soft_landing(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -502,7 +529,8 @@ def soft_landing(
   cost *= _command_is_active(command, command_threshold)
   return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
-#惩罚支撑脚打滑
+
+# 惩罚支撑脚打滑
 def feet_slip(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -519,7 +547,9 @@ def feet_slip(
   if command is None:
     return _zero_reward(env)
 
-  in_contact = _safe_tensor(contact_sensor.data.found.float(), limit=1.0).clamp(0.0, 1.0)
+  in_contact = _safe_tensor(contact_sensor.data.found.float(), limit=1.0).clamp(
+    0.0, 1.0
+  )
   foot_vel_xy = _safe_tensor(
     asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2],
     limit=_SAFE_STATE_LIMIT,
@@ -536,7 +566,8 @@ def feet_slip(
     )
   return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
-#脚部腾空时间奖励
+
+# 脚部腾空时间奖励
 def feet_air_time(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -582,6 +613,103 @@ def feet_air_time(
   return _safe_tensor(reward, limit=_SAFE_REWARD_LIMIT)
 
 
+def delta_swing_clearance_cost(
+  env: ManagerBasedRlEnv,
+  height_sensor_name: str = "foot_height_scan",
+  contact_sensor_name: str = "feet_ground_contact",
+  command_name: str = "twist",
+  command_threshold: float = 0.05,
+  minimum_clearance: float = 0.055,
+  obstacle_gain: float = 0.45,
+  max_obstacle_extra: float = 0.12,
+  forward_x_min: float = -0.25,
+  min_map_valid_ratio: float = 0.35,
+  min_obstacle_relief: float = 0.025,
+  clearance_std: float = 0.04,
+) -> torch.Tensor:
+  """Penalize terrain-aware low feet during DELTA swing phases.
+
+  WTW's phase-conditioned clearance term remains the main gait objective. The
+  DELTA term adds a target derived from the latest camera BEV map:
+  ``target = minimum_clearance + obstacle_gain * local_obstacle_relief``.
+  The term is one-sided and active only while a foot is airborne, so it does
+  not reward hopping on flat ground.
+  """
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+  try:
+    height_sensor = env.scene[height_sensor_name]
+  except (AttributeError, KeyError):
+    return _zero_reward(env)
+  contact_sensor = _get_contact_sensor(env, contact_sensor_name)
+  if not isinstance(height_sensor, TerrainHeightSensor) or contact_sensor is None:
+    return _zero_reward(env)
+  heights = _safe_tensor(height_sensor.data.heights, limit=1.0).clamp_min(0.0)
+  if contact_sensor.data.found is None:
+    return _zero_reward(env)
+  swing = 1.0 - _safe_tensor(contact_sensor.data.found.float(), limit=1.0).clamp(0.0, 1.0)
+  terrain_map = getattr(env, "_delta_map_cache", None)
+  obstacle_relief = torch.zeros(env.num_envs, dtype=heights.dtype, device=heights.device)
+  map_valid_ratio = torch.zeros_like(obstacle_relief)
+  if isinstance(terrain_map, torch.Tensor) and terrain_map.ndim == 4:
+    if terrain_map.shape[0] == env.num_envs and terrain_map.shape[-1] >= 4:
+      map_x = terrain_map[..., 0]
+      map_z = terrain_map[..., 2]
+      map_valid = terrain_map[..., 3].clamp(0.0, 1.0)
+      valid = (map_valid > 0.25) & (map_x >= float(forward_x_min)) & torch.isfinite(map_z)
+      # Compare cells across y for each forward column.  A pitched camera sees
+      # a flat floor at different z values as x increases; a whole-map z-span
+      # would mistake that perspective effect for an obstacle.  Lateral
+      # variation within one column is a much cleaner obstacle proxy.
+      safe_z_min = torch.where(valid, map_z, torch.full_like(map_z, 1.0e6))
+      safe_z_max = torch.where(valid, map_z, torch.full_like(map_z, -1.0e6))
+      column_min = safe_z_min.amin(dim=-2)
+      column_max = safe_z_max.amax(dim=-2)
+      column_has_data = (column_min < 1.0e5) & (column_max > -1.0e5)
+      column_relief = torch.where(
+        column_has_data, (column_max - column_min).clamp_min(0.0),
+        torch.zeros_like(column_min),
+      )
+      observed = column_relief.amax(dim=-1)
+      # delta_depth_image normalizes the z channel by z_scale_m=0.8.
+      obstacle_relief = (observed.clamp_min(0.0) * 0.8).clamp(
+        max=max(float(max_obstacle_extra), 0.0),
+      )
+      map_valid_ratio = valid.to(heights.dtype).mean(dim=(-1, -2))
+
+  target = float(minimum_clearance) + max(float(obstacle_gain), 0.0) * obstacle_relief
+  target = target.unsqueeze(-1)
+  deficit = torch.relu(target - heights)
+  normalized_deficit = deficit / max(_safe_std(clearance_std), 1.0e-3)
+  cost = torch.mean(normalized_deficit * swing, dim=1)
+  obstacle_active = (
+    (map_valid_ratio >= max(float(min_map_valid_ratio), 0.0))
+    & (obstacle_relief >= max(float(min_obstacle_relief), 0.0))
+  )
+  cost *= _command_is_active(command, command_threshold)
+  cost *= obstacle_active.to(cost.dtype)
+  if hasattr(env, "extras") and "log" in env.extras:
+    env.extras["log"]["DELTA/swing_clearance_cost"] = _safe_tensor(
+      cost.mean(), limit=_SAFE_REWARD_LIMIT,
+    )
+    swing_count = (swing > 0.0).to(target.dtype).sum().clamp_min(1.0)
+    env.extras["log"]["DELTA/target_clearance"] = _safe_tensor(
+      (target * (swing > 0.0)).sum() / swing_count,
+      limit=_SAFE_REWARD_LIMIT,
+    )
+    env.extras["log"]["DELTA/obstacle_relief"] = _safe_tensor(
+      obstacle_relief.mean(), limit=_SAFE_REWARD_LIMIT,
+    )
+    env.extras["log"]["DELTA/reward_map_valid_ratio"] = _safe_tensor(
+      map_valid_ratio.mean(), limit=1.0,
+    )
+    env.extras["log"]["DELTA/obstacle_active_ratio"] = _safe_tensor(
+      obstacle_active.to(cost.dtype).mean(), limit=1.0,
+    )
+  return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
+
+
 def feet_gait(
   env: ManagerBasedRlEnv,
   period: float,
@@ -600,7 +728,7 @@ def feet_gait(
   sensor = _get_contact_sensor(env, sensor_name)
   if sensor is None or sensor.data.current_contact_time is None:
     return _zero_reward(env)
-  period_steps = max(int(round(period / env.step_dt)), 1)
+  period_steps = max(round(period / env.step_dt), 1)
   phase = ((env.episode_length_buf % period_steps) / period_steps).unsqueeze(1)
   offsets = torch.as_tensor(offset, device=env.device, dtype=phase.dtype).flatten()
   num_feet = sensor.data.current_contact_time.shape[1]
@@ -624,7 +752,8 @@ def feet_gait(
     reward *= _command_is_active(command, command_threshold)
   return _safe_tensor(reward, limit=_SAFE_REWARD_LIMIT)
 
-#脚部腾空超时惩罚
+
+# 脚部腾空超时惩罚
 def prolonged_air_time(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -642,10 +771,13 @@ def prolonged_air_time(
   if current_air_time is None:
     return _zero_reward(env)
   current_air_time = _safe_tensor(current_air_time, limit=10.0).clamp_min(0.0)
-  cost = torch.sum(torch.clamp(current_air_time - max(max_air_time, 0.0), min=0.0), dim=1)
+  cost = torch.sum(
+    torch.clamp(current_air_time - max(max_air_time, 0.0), min=0.0), dim=1
+  )
   return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
-#脚部落地检测
+
+# 脚部落地检测
 def feet_stance_contact(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -678,7 +810,8 @@ def feet_stance_contact(
     )
   return _safe_tensor(missing_fraction * standing, limit=_SAFE_REWARD_LIMIT)
 
-#关节角加速度限制
+
+# 关节角加速度限制
 def joint_acc_l2(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -693,7 +826,8 @@ def joint_acc_l2(
     limit=_SAFE_REWARD_LIMIT,
   )
 
-#关节扭矩限制
+
+# 关节扭矩限制
 def joint_torques_l2(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -708,7 +842,8 @@ def joint_torques_l2(
     limit=_SAFE_REWARD_LIMIT,
   )
 
-#关节位置限制
+
+# 关节位置限制
 def joint_pos_limits(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -730,7 +865,8 @@ def joint_pos_limits(
   cost = torch.sum(lower_violation + upper_violation, dim=1)
   return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
-#动作学习率平滑
+
+# 动作学习率平滑
 def action_rate_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
   """计算相邻 step 的 action 变化量, 用于抑制 policy 输出抖动."""
   action = _safe_tensor(env.action_manager.action, limit=_SAFE_STATE_LIMIT)
@@ -740,6 +876,27 @@ def action_rate_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
   )
   return _safe_tensor(
     torch.sum(torch.square(action - prev_action), dim=1),
+    limit=_SAFE_REWARD_LIMIT,
+  )
+
+
+def action_acc_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Penalize the discrete second derivative of policy actions safely."""
+  action = _safe_tensor(env.action_manager.action, limit=_SAFE_STATE_LIMIT)
+  prev_action = _safe_tensor(
+    env.action_manager.prev_action,
+    limit=_SAFE_STATE_LIMIT,
+  )
+  prev_prev_action = _safe_tensor(
+    env.action_manager.prev_prev_action,
+    limit=_SAFE_STATE_LIMIT,
+  )
+  action_acc = _safe_tensor(
+    action - 2.0 * prev_action + prev_prev_action,
+    limit=_SAFE_STATE_LIMIT,
+  )
+  return _safe_tensor(
+    torch.sum(torch.square(action_acc), dim=1),
     limit=_SAFE_REWARD_LIMIT,
   )
 
@@ -775,3 +932,160 @@ def zero_command_pose_penalty(
   pose_error = torch.mean(torch.square(joint_pos - default_pos), dim=1)
   pose_error *= 1.0 - _command_is_active(command, command_threshold)
   return _safe_tensor(pose_error, limit=_SAFE_REWARD_LIMIT)
+
+
+def terrain_collision_cost(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  force_threshold: float = 25.0,
+) -> torch.Tensor:
+  """Return the fraction of links with a *current* terrain collision.
+
+  The old ``self_collision_cost`` summed all four history slots.  Because the
+  history overlaps successive 20 ms policy steps, one sustained calf contact
+  was counted up to four times per step, producing the abnormal
+  ``Episode_Reward/shank_collision`` curve.  We intentionally inspect only
+  the newest history sample and normalize by the number of links.
+  """
+  sensor = _get_contact_sensor(env, sensor_name)
+  if sensor is None:
+    return _zero_reward(env)
+  data = sensor.data
+  if data.force_history is not None:
+    force = data.force_history[..., -1, :]
+    hit = torch.linalg.vector_norm(force, dim=-1) > max(float(force_threshold), 0.0)
+  elif data.force is not None:
+    hit = torch.linalg.vector_norm(data.force, dim=-1) > max(float(force_threshold), 0.0)
+  elif data.found is not None:
+    hit = data.found > 0.0
+  else:
+    return _zero_reward(env)
+  return _safe_tensor(hit.to(torch.float32).mean(dim=1), limit=1.0)
+
+
+def body_orientation_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reference HIM cost for roll/pitch tilt (use a negative weight)."""
+  return flat_orientation_l2(env, asset_cfg)
+
+
+def stand_still(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation from the default pose while the command is zero."""
+  asset: Entity = env.scene[asset_cfg.name]
+  default = asset.data.default_joint_pos
+  if default is None:
+    return _zero_reward(env)
+  cost = torch.sum(
+    torch.square(asset.data.joint_pos[:, asset_cfg.joint_ids] - default[:, asset_cfg.joint_ids]),
+    dim=1,
+  )
+  command = _safe_command(env, command_name)
+  if command is not None:
+    active = (
+      torch.linalg.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+      <= command_threshold
+    ).to(cost.dtype)
+    cost = cost * active
+  return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
+
+
+def hip_joint_deviation_penalty(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reference HIM hip-centering penalty for standing/lateral commands."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+  joint_ids = asset_cfg.joint_ids
+  if isinstance(joint_ids, slice) and asset_cfg.joint_names is None:
+    joint_ids, _ = asset.find_joints(r".*_hip_joint")
+  default = asset.data.default_joint_pos
+  if default is None:
+    return _zero_reward(env)
+  cost = torch.sum(
+    torch.square(asset.data.joint_pos[:, joint_ids] - default[:, joint_ids]), dim=1
+  )
+  active = (
+    (torch.abs(command[:, 1]) <= command_threshold)
+    & (torch.abs(command[:, 2]) <= command_threshold)
+  ).to(cost.dtype)
+  return _safe_tensor(cost * active, limit=_SAFE_REWARD_LIMIT)
+
+
+def track_linear_velocity_l1(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """RAIBO2-style planar velocity tracking using an L1 norm in the kernel."""
+  command = _safe_command(env, command_name)
+  if command is None:
+    return _zero_reward(env)
+  actual = safe_base_lin_vel(env, asset_cfg)
+  error = torch.linalg.vector_norm(command[:, :2] - actual[:, :2], dim=1)
+  reward = torch.exp(-error / max(float(std), 1.0e-6))
+  return _safe_tensor(reward, limit=1.0)
+
+
+def lin_vel_z_l2(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Penalize vertical base velocity while allowing terrain-following pitch."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return _safe_tensor(
+    torch.square(
+      _safe_tensor(asset.data.root_link_lin_vel_b[:, 2], limit=_SAFE_STATE_LIMIT)
+    ),
+    limit=_SAFE_REWARD_LIMIT,
+  )
+
+
+def roll_penalty(
+  env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Penalize roll while leaving pitch available for climbing."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return _safe_tensor(
+    torch.square(_safe_tensor(asset.data.projected_gravity_b[:, 1], limit=1.0)),
+    limit=_SAFE_REWARD_LIMIT,
+  )
+
+
+def pitch_penalty(
+  env: ManagerBasedRlEnv,
+  max_pitch_rad: float = 0.50,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Dead-zone pitch penalty: normal climbing pitch is not discouraged."""
+  asset: Entity = env.scene[asset_cfg.name]
+  gravity_x = torch.abs(_safe_tensor(asset.data.projected_gravity_b[:, 0], limit=1.0))
+  threshold = float(torch.sin(torch.tensor(max_pitch_rad)))
+  return _safe_tensor(
+    torch.square(torch.clamp(gravity_x - threshold, min=0.0)), limit=1.0
+  )
+
+
+def feet_contact_without_cmd(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+) -> torch.Tensor:
+  """Reward all-foot support only for a commanded standstill."""
+  contact = safe_foot_contact(env, sensor_name)
+  command = _safe_command(env, command_name)
+  if command is None or contact.numel() == 0:
+    return _zero_reward(env)
+  standing = 1.0 - _command_is_active(command, 0.1)
+  return torch.sum(contact > 0.0, dim=1).float() * standing

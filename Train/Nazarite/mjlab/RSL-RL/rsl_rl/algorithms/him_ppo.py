@@ -346,13 +346,23 @@ class HIMPPO:
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
-        # Project-level dataclasses include optional fields for CNN/RNN models.
-        # Remove unset options before constructing the plain HIM/MLP models.
+        # Project-level dataclasses include optional fields for CNN/RNN and
+        # custom DELTA models. Remove unset options before constructing the
+        # plain HIM actor and MLP critic. This mirrors MjlabOnPolicyRunner's
+        # config cleanup, which this standalone HIM runner does not inherit.
         for model_cfg in (actor_cfg, critic_cfg):
-            if model_cfg.get("cnn_cfg") is None:
-                model_cfg.pop("cnn_cfg", None)
+            for key in (
+                "cnn_cfg",
+                "distribution_cfg",
+                "proprio_dim",
+                "map_height",
+                "map_width",
+            ):
+                if model_cfg.get(key) is None:
+                    model_cfg.pop(key, None)
             for key in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
-                model_cfg.pop(key, None)
+                if model_cfg.get("rnn_type") is None:
+                    model_cfg.pop(key, None)
         default_sets = ["actor", "critic"]
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
 

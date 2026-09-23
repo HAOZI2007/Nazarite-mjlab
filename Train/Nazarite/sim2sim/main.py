@@ -18,13 +18,23 @@ from .mujoco_io import MuJoCoIO
 from .policy_runner import PolicyRunner
 from .scene import add_stairs_and_slopes_scene
 from .wtw import config as wtw_config
+from .wtw.behavior import WTWBehaviorController
 from .wtw.command import restrict_command as wtw_command
 from .wtw.observation import WTWObservationBuilder
+from .wtw_delta_residual import config as delta_config
+from .wtw_delta_residual.observation import WtwDeltaObservationBuilder
+from .wtw_delta_residual.policy import WtwDeltaResidualPolicy
+from .wtw_delta_residual.terrain import (
+    add_stepping_stones_scene,
+    build_delta_map,
+)
 
 
 def default_policy_path(mode: str = "baseline") -> Path:
     if mode == "wtw":
         policy_path = wtw_config.POLICY
+    elif mode == "wtw_delta_residual":
+        policy_path = delta_config.POLICY
     else:
         policy_path = baseline_config.POLICY
     if not policy_path.is_file():
@@ -39,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Nazarite Go2 MuJoCo sim2sim")
     parser.add_argument(
         "--mode",
-        choices=("baseline", "wtw"),
+        choices=("baseline", "wtw", "wtw_delta_residual"),
         default="baseline",
     )
     parser.add_argument("--policy", type=Path, default=None)
@@ -87,16 +97,21 @@ def main() -> None:
         )
 
     if args.mode == "wtw":
-        hip_effort = wtw_config.HIP_EFFORT
-        calf_effort = wtw_config.CALF_EFFORT
         io = MuJoCoIO(
-            hip_effort=hip_effort,
-            calf_effort=calf_effort,
+            hip_effort=wtw_config.HIP_EFFORT,
+            calf_effort=wtw_config.CALF_EFFORT,
             scene_builder=add_stairs_and_slopes_scene,
+        )
+    elif args.mode == "wtw_delta_residual":
+        io = MuJoCoIO(
+            hip_effort=wtw_config.HIP_EFFORT,
+            calf_effort=wtw_config.CALF_EFFORT,
+            scene_builder=add_stepping_stones_scene,
         )
     else:
         io = MuJoCoIO()
     standard_policy: PolicyRunner | None = None
+    delta_policy: WtwDeltaResidualPolicy | None = None
     if args.mode == "wtw":
         expected_obs_dim = wtw_config.OBS_DIM
         expected_observation_names = wtw_config.OBSERVATION_NAMES
@@ -105,7 +120,8 @@ def main() -> None:
             expected_obs_dim=expected_obs_dim,
             expected_observation_names=expected_observation_names,
         )
-        policy = standard_policy
+    elif args.mode == "wtw_delta_residual":
+        delta_policy = WtwDeltaResidualPolicy(policy_path)
     else:
         expected_obs_dim = baseline_config.OBS_DIM
         expected_observation_names = baseline_config.OBSERVATION_NAMES
@@ -114,10 +130,25 @@ def main() -> None:
             expected_obs_dim=expected_obs_dim,
             expected_observation_names=expected_observation_names,
         )
-        policy = standard_policy
-    wtw_builder = WTWObservationBuilder() if args.mode == "wtw" else None
+    wtw_builder: WTWObservationBuilder | None
+    if args.mode == "wtw_delta_residual":
+        wtw_builder = WtwDeltaObservationBuilder()
+    elif args.mode == "wtw":
+        wtw_builder = WTWObservationBuilder()
+    else:
+        wtw_builder = None
+    wtw_behavior_controller: WTWBehaviorController | None = None
+    if wtw_builder is not None and gamepad is not None:
+        wtw_behavior_controller = WTWBehaviorController(
+            wtw_builder,
+            gamepad,
+            status_callback=print,
+        )
     io.reset()
-    policy.reset()
+    if standard_policy is not None:
+        standard_policy.reset()
+    if delta_policy is not None:
+        delta_policy.reset()
     if wtw_builder is not None:
         wtw_builder.reset()
     camera_config = FollowCameraConfig(
@@ -128,7 +159,12 @@ def main() -> None:
     )
 
     print(f"[sim2sim] policy: {policy_path}")
-    print(f"[sim2sim] mode={args.mode}, policy_obs_dim={policy.obs_dim}")
+    policy_obs_dim = (
+        delta_config.DELTA_OBS_DIM
+        if delta_policy is not None
+        else standard_policy.obs_dim if standard_policy is not None else 0
+    )
+    print(f"[sim2sim] mode={args.mode}, policy_obs_dim={policy_obs_dim}")
     print(f"[sim2sim] timestep={io.model.opt.timestep:.4f}s, control_dt={CONTROL_DT:.4f}s")
     if gamepad is None:
         print(f"[sim2sim] fixed command={command.tolist()}")
@@ -144,19 +180,34 @@ def main() -> None:
             while viewer.is_running():
                 if gamepad is not None:
                     command = gamepad.poll()
+                    if wtw_behavior_controller is not None:
+                        wtw_behavior_controller.update()
 
                 if wtw_builder is not None:
                     command = wtw_command(command)
-                if wtw_builder is None:
+                if args.mode == "wtw_delta_residual":
+                    if not isinstance(wtw_builder, WtwDeltaObservationBuilder):
+                        raise RuntimeError("DELTA mode requires a DELTA observation builder")
+                    if delta_policy is None:
+                        raise RuntimeError("DELTA mode requires a DELTA policy")
+                    wtw_proprio, delta_proprio = wtw_builder.build_inputs(
+                        io, command, delta_policy.last_action
+                    )
+                    raw_action = delta_policy.step(
+                        wtw_proprio,
+                        delta_proprio,
+                        build_delta_map(io),
+                    )
+                elif wtw_builder is None:
                     if standard_policy is None:
-                        raise RuntimeError("Standard policy is not initialized")
+                        raise RuntimeError("Baseline mode requires a policy")
                     obs = build_observation(
                         io, command, standard_policy.last_action
                     )
                     raw_action = standard_policy.step(obs)
                 else:
                     if standard_policy is None:
-                        raise RuntimeError("WTW policy is not initialized")
+                        raise RuntimeError("WTW mode requires a policy")
                     obs = wtw_builder.build(
                         io, command, standard_policy.last_action
                     )

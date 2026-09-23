@@ -26,10 +26,30 @@ from .config.train_config.smp_config.smp_teacher_rl_cfg import (
     smp_teacher_go2_runner_cfg,
 )
 from .config.train_config.him_cfg import (
-    Nazarite_HIM_Obstacle_Go2,
     unitree_go2_him_runner_cfg,
 )
+from .config.train_config.env_cfgs.him_complex_env_cfg import Nazarite_HIM_Complex_Terrain_Go2
+from .config.train_config.delta_rl_cfg import delta_go2_runner_cfg
+from .config.train_config.env_cfgs.delta_go2_env_cfgs import Nazarite_Delta_Go2
+from .config.train_config.wtw_delta_rl_cfg import wtw_delta_go2_runner_cfg
+from .config.train_config.env_cfgs.wtw_delta_env_cfg import Nazarite_Wtw_Delta_Go2
 from rsl_rl.runners import HIMOnPolicyRunner
+
+register_mjlab_task(
+    task_id="Nazarite-Delta-Go2",
+    env_cfg=Nazarite_Delta_Go2(),
+    play_env_cfg=Nazarite_Delta_Go2(play=True),
+    rl_cfg=delta_go2_runner_cfg(),
+    runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Nazarite-WTW-Delta-Go2",
+    env_cfg=Nazarite_Wtw_Delta_Go2(),
+    play_env_cfg=Nazarite_Wtw_Delta_Go2(play=True),
+    rl_cfg=wtw_delta_go2_runner_cfg(),
+    runner_cls=VelocityOnPolicyRunner,
+)
 
 register_mjlab_task(
     task_id="Nazarite-Velocity-Flat-Go2",
@@ -41,8 +61,8 @@ register_mjlab_task(
 
 register_mjlab_task(
     task_id="Nazarite-HIM-Complex-Terrain-Go2",
-    env_cfg=Nazarite_HIM_Obstacle_Go2(),
-    play_env_cfg=Nazarite_HIM_Obstacle_Go2(play=True),
+    env_cfg=Nazarite_HIM_Complex_Terrain_Go2(),
+    play_env_cfg=Nazarite_HIM_Complex_Terrain_Go2(play=True),
     rl_cfg=unitree_go2_him_runner_cfg(),
     runner_cls=HIMOnPolicyRunner,
 )

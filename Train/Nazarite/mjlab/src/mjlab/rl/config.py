@@ -36,6 +36,31 @@ class RslRlModelCfg:
   """Number of stacked RNN layers."""
   class_name: str = "MLPModel"
   """Model class name resolved by RSL-RL (MLPModel, CNNModel, or RNNModel)."""
+  # Optional custom-model arguments.  Standard MLP/CNN models ignore these;
+  # DELTA uses them to split the flattened observation into proprioception and
+  # an H×W×C terrain map.
+  proprio_dim: int | None = None
+  map_height: int | None = None
+  map_width: int | None = None
+  map_channels: int | None = None
+  map_extent: Tuple[float, float] | None = None
+  map_center: Tuple[float, float] | None = None
+  forward_x_threshold: float = -0.75
+  map_confidence_target: float = 0.45
+  map_confidence_floor: float = 0.50
+  # WTW+DELTA residual-policy options. They are ignored by standard models.
+  prior_group: str | None = None
+  delta_map_group: str | None = None
+  delta_proprio_group: str | None = None
+  residual_hidden_dims: Tuple[int, ...] = (128, 64)
+  residual_scale: float = 0.1
+  residual_scale_start: float | None = None
+  residual_scale_ramp_iters: int = 0
+  wtw_checkpoint: str | None = None
+  freeze_wtw: bool = True
+  residual_joint_scales: Tuple[float, ...] | None = None
+  residual_gate_bias: float = -2.0
+  residual_activation: str = "softsign"
 
 
 @dataclass
