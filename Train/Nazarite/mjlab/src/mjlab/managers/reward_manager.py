@@ -69,6 +69,16 @@ class RewardManager(ManagerBase):
       self._episode_sums[term_name] = torch.zeros(
         self.num_envs, dtype=torch.float, device=self.device
       )
+    configured_composition = getattr(env.cfg, "reward_composition", None)
+    self._reward_composition = (
+      configured_composition
+      if isinstance(configured_composition, dict)
+      else None
+    )
+    if self._reward_composition:
+      self._episode_sums["__paper_combined"] = torch.zeros(
+        self.num_envs, dtype=torch.float, device=self.device
+      )
     self._reward_buf = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
     self._step_reward = torch.zeros(
       (self.num_envs, len(self._term_names)), dtype=torch.float, device=self.device
@@ -105,7 +115,8 @@ class RewardManager(ManagerBase):
     extras = {}
     for key in self._episode_sums.keys():
       episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
-      extras["Episode_Reward/" + key] = (
+      log_name = "paper_combined" if key == "__paper_combined" else key
+      extras["Episode_Reward/" + log_name] = (
         episodic_sum_avg / self._env.max_episode_length_s
       )
       self._episode_sums[key][env_ids] = 0.0
@@ -116,6 +127,7 @@ class RewardManager(ManagerBase):
   def compute(self, dt: float) -> torch.Tensor:
     self._reward_buf[:] = 0.0
     scale = dt if self._scale_by_dt else 1.0
+    weighted_rates: dict[str, torch.Tensor] = {}
     for term_idx, (name, term_cfg) in enumerate(
       zip(self._term_names, self._term_cfgs, strict=False)
     ):
@@ -130,7 +142,66 @@ class RewardManager(ManagerBase):
       self._reward_buf += value
       self._episode_sums[name] += value
       self._step_reward[:, term_idx] = value / scale
+      weighted_rates[name] = self._step_reward[:, term_idx]
+
+    composition = self._reward_composition
+    if composition:
+      positive_names = tuple(composition.get("positive_terms", ()))
+      negative_names = tuple(composition.get("negative_terms", ()))
+      missing = (
+        set(positive_names + negative_names)
+        - set(weighted_rates)
+      )
+      if missing:
+        raise KeyError(
+          "Reward composition references inactive or unknown terms: "
+          f"{sorted(missing)}"
+        )
+      positive = self._sum_rates(weighted_rates, positive_names)
+      negative = self._sum_rates(weighted_rates, negative_names)
+      beta = float(composition.get("negative_exponent", 0.1))
+      # The paper's negative sum is non-positive.  Clamp the exponent only to
+      # avoid numerical underflow if a malformed physics state produces a very
+      # large penalty; this does not change the ordinary operating range.
+      attenuation = torch.exp(torch.clamp(beta * negative, min=-20.0, max=0.0))
+      combined_rate = torch.nan_to_num(
+        positive * attenuation, nan=0.0, posinf=0.0, neginf=0.0
+      )
+      self._reward_buf = combined_rate * scale
+
+      terminal_penalty = float(composition.get("terminal_penalty", 0.0))
+      if terminal_penalty != 0.0:
+        terminated = getattr(self._env, "reset_terminated", None)
+        time_outs = getattr(self._env, "reset_time_outs", None)
+        if terminated is not None:
+          failure = terminated
+          if time_outs is not None:
+            failure = failure & ~time_outs
+          # Terminal penalties are specified in environment reward units, not
+          # reward-rate units, so they remain -50 exactly under dt scaling.
+          self._reward_buf += terminal_penalty * failure.to(self._reward_buf.dtype)
+
+      if "__paper_combined" in self._episode_sums:
+        self._episode_sums["__paper_combined"] += self._reward_buf
+      if hasattr(self._env, "extras") and "log" in self._env.extras:
+        self._env.extras["log"]["Reward/paper_positive_rate"] = positive.mean()
+        self._env.extras["log"]["Reward/paper_negative_rate"] = negative.mean()
+        self._env.extras["log"]["Reward/paper_attenuation"] = attenuation.mean()
     return self._reward_buf
+
+  @staticmethod
+  def _sum_rates(
+    rates: dict[str, torch.Tensor], names: tuple[str, ...]
+  ) -> torch.Tensor:
+    if not names:
+      sample = next(iter(rates.values()), None)
+      if sample is None:
+        raise RuntimeError("Cannot compose rewards without active reward terms")
+      return torch.zeros_like(sample)
+    total = torch.zeros_like(rates[names[0]])
+    for name in names:
+      total = total + rates[name]
+    return total
 
   def debug_vis(self, visualizer: DebugVisualizer) -> None:
     """Delegate debug visualization to class-based reward terms."""

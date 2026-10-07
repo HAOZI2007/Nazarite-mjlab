@@ -145,7 +145,7 @@ class GaussianDistribution(Distribution):
         self,
         output_dim: int,
         init_std: float = 1.0,
-        std_range: tuple[float, float] = (1e-6, 1e6),
+        std_range: tuple[float, float] | None = (1e-6, 1e6),
         std_type: str = "scalar",
         learn_std: bool = True,
     ) -> None:
@@ -154,7 +154,8 @@ class GaussianDistribution(Distribution):
         Args:
             output_dim: Dimension of the action/output space.
             init_std: Initial standard deviation.
-            std_range: Range for the standard deviation. Should be a tuple of (min, max) values for clamping.
+            std_range: Optional range for standard-deviation clamping. ``None`` disables
+                clamping; the caller remains responsible for numerical stability.
             std_type: Parameterization of the standard deviation: "scalar" or "log".
             learn_std: Whether the standard deviation should be learnable. If False, it will be fixed to `init_std`.
         """
@@ -169,10 +170,19 @@ class GaussianDistribution(Distribution):
         else:
             raise ValueError(f"Unknown standard deviation type: {std_type}. Should be 'scalar' or 'log'.")
 
-        # Clamp the std range to ensure numerical stability and store log space range if needed
-        self.std_range = list(std_range)
-        self.std_range[0] = max(self.std_range[0], 1e-6)  # Avoid zero std for numerical stability
-        self.log_std_range = [float(np.log(self.std_range[0])), float(np.log(self.std_range[1]))]
+        # ``None`` is useful for experiments that intentionally want an
+        # unconstrained learnable exploration scale.  Keep the historical broad
+        # range as the default for all existing tasks.
+        if std_range is None:
+            self.std_range = None
+            self.log_std_range = None
+        else:
+            self.std_range = list(std_range)
+            self.std_range[0] = max(self.std_range[0], 1e-6)
+            self.log_std_range = [
+                float(np.log(self.std_range[0])),
+                float(np.log(self.std_range[1])),
+            ]
 
         # Internal torch distribution (populated by update())
         self._distribution: Normal | None = None
@@ -184,9 +194,13 @@ class GaussianDistribution(Distribution):
         """Update the Gaussian distribution from MLP output."""
         mean = mlp_output
         if self.std_type == "scalar":
-            std = self.std_param.clamp(self.std_range[0], self.std_range[1])
+            std = self.std_param
+            if self.std_range is not None:
+                std = std.clamp(self.std_range[0], self.std_range[1])
         elif self.std_type == "log":
-            log_std = self.log_std_param.clamp(self.log_std_range[0], self.log_std_range[1])
+            log_std = self.log_std_param
+            if self.log_std_range is not None:
+                log_std = log_std.clamp(self.log_std_range[0], self.log_std_range[1])
             std = torch.exp(log_std)
         self._distribution = Normal(mean, std)
 

@@ -114,6 +114,15 @@ class ManagerBasedRlEnvCfg:
   rewards: dict[str, RewardTermCfg] = field(default_factory=dict)
   """Reward terms configuration."""
 
+  reward_composition: dict[str, Any] | None = None
+  """Optional task-local reward composition.
+
+  When set, ``RewardManager`` can combine selected positive and negative
+  reward-rate terms using a paper-style ``r_plus * exp(beta * r_minus)``
+  rule.  The default is ``None``, preserving the ordinary weighted sum used
+  by existing tasks.
+  """
+
   terminations: dict[str, TerminationTermCfg] = field(default_factory=dict)
   """Termination terms configuration. If empty, episodes never reset. Use
   ``mdp.time_out`` with ``time_out=True`` for episode time limits."""

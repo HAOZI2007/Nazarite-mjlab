@@ -1,5 +1,7 @@
 import torch
 from nazarite.delta import DeltaEncoder
+from nazarite.delta.encoder import _center_context
+from nazarite.delta.sampling import make_base_reference_grid
 
 
 def test_delta_supports_both_map_resolutions() -> None:
@@ -32,3 +34,31 @@ def test_delta_attention_cache_is_detached() -> None:
   assert len(snapshot) == 3
   assert snapshot[-1]["locations"].shape == (1, 4, 8, 2)
   assert not snapshot[-1]["locations"].requires_grad
+
+
+def test_delta_patch_encoding_uses_center_relative_height_only() -> None:
+  patch = torch.zeros(1, 1, 1, 5, 3, 3)
+  patch[:, :, :, 0] = 0.4
+  patch[:, :, :, 1] = -0.2
+  patch[:, :, :, 2] = torch.tensor([[1.0, 1.1, 1.2], [0.9, 1.0, 1.3], [0.8, 0.7, 1.4]])
+  patch[:, :, :, 3] = 1.0
+  patch[:, :, :, 4] = 0.5
+
+  center, context = _center_context(patch, final=False)
+
+  assert context.shape[-1] == 0
+  assert center.shape == (1, 1, 1, 9)
+  assert center[0, 0, 0, 4] == 0.0
+  assert torch.allclose(center.max(), torch.tensor(0.4))
+  assert torch.allclose(center.min(), torch.tensor(-0.3))
+
+
+def test_eight_base_references_cover_both_map_axes() -> None:
+  torch.manual_seed(7)
+  references = make_base_reference_grid(
+    heads=4, samples=8, limits=(1.0, 0.7), perturbation=0.0
+  )
+
+  assert references.shape == (4, 8, 2)
+  assert torch.unique(references[0, :, 0]).numel() == 4
+  assert torch.unique(references[0, :, 1]).numel() == 2

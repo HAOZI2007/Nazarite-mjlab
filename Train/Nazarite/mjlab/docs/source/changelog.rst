@@ -5,6 +5,13 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Changed
+^^^^^^^
+
+- Updated the XZ1 HIM task with current-step self-collision accounting,
+  gait-synchronized foot air time, speed-dependent posture tracking,
+  roll/pitch-aware yaw tracking, and terrain-relative swing clearance.
+
 Version 1.6.0 (August 8, 2026)
 ------------------------------
 
@@ -33,6 +40,11 @@ Version 1.6.0 (August 8, 2026)
 Added
 ^^^^^
 
+- Added independent WTW+DELTA Direct and Oracle tasks. The Direct actor uses a
+  single D435-derived terrain map while an asymmetric critic uses a clean
+  raycast map; the Oracle actor provides a ground-truth-map control experiment.
+- Added synchronized D435/ground-truth map quality metrics and zero/shuffle map
+  ablations for testing whether a DELTA policy causally uses visual terrain.
 - Added ``GeomCfg``, exposed as the ``geoms`` field on ``EntityCfg``, a spec
   editor that matches geoms by name and patches their attributes. Supports
   ``group`` (so a geom can collide without being drawn) and all collision
@@ -67,6 +79,13 @@ Added
 Changed
 ^^^^^^^
 
+- Corrected DELTA sampling to encode center-relative elevation, propagate raw
+  references between layers, initialize two-dimensional sample lattices, and
+  use observation confidence as the attention-validity bias.
+- WTW+DELTA Direct now uses five deployment-compatible proprioception frames,
+  a zero-initialized nonlinear action correction, simulator-grounded terrain
+  rewards, and adaptive per-terrain sampling without exposing base linear
+  velocity to the actor.
 - DELTA now uses an eight-family, ten-level terrain curriculum with two-success
   promotion and three-failure demotion, plus scheduled velocity ranges that
   widen at fixed training iterations.

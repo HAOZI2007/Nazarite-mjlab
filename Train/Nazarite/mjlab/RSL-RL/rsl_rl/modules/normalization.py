@@ -11,6 +11,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from rsl_rl.utils.numerics import globally_bad
+
 
 class EmpiricalNormalization(nn.Module):
     """Normalize mean and variance of values based on empirical values."""
@@ -48,6 +50,7 @@ class EmpiricalNormalization(nn.Module):
         return (x - self._mean) / (self._std + self.eps)
 
     @torch.jit.unused
+    @torch.no_grad()
     def update(self, x: torch.Tensor) -> None:
         """Learn input values without computing the output values of them."""
         if not self.training:
@@ -55,15 +58,39 @@ class EmpiricalNormalization(nn.Module):
         if self.until is not None and self.count >= self.until:
             return
 
-        count_x = x.shape[0]
-        self.count += count_x
-        rate = count_x / self.count
-        var_x = torch.var(x, dim=0, unbiased=False, keepdim=True)
-        mean_x = torch.mean(x, dim=0, keepdim=True)
-        delta_mean = mean_x - self._mean
-        self._mean += rate * delta_mean
-        self._var += rate * (var_x - self._var + delta_mean * (mean_x - self._mean))
-        self._std = torch.sqrt(self._var)
+        if globally_bad((~torch.isfinite(x)).any()):
+            raise FloatingPointError("Normalizer input is non-finite on at least one rank")
+        count_x = torch.tensor(x.shape[0], dtype=self.count.dtype, device=self.count.device)
+        if x.shape[0]:
+            var_x, local_mean = torch.var_mean(x.double(), dim=0, unbiased=False, keepdim=True)
+        else:
+            local_mean = torch.zeros_like(self._mean, dtype=torch.float64)
+            var_x = torch.zeros_like(local_mean)
+        mean_sum = local_mean * x.shape[0]
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(count_x)
+            torch.distributed.all_reduce(mean_sum)
+        if count_x.item() == 0:
+            return
+        mean_x = mean_sum / count_x
+        m2_x = x.shape[0] * (var_x + (local_mean - mean_x).square())
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(m2_x)
+        next_count = self.count + count_x
+        rate = count_x.double() / next_count
+        delta = mean_x - self._mean.double()
+        mean = self._mean.double() + rate * delta
+        var = (1 - rate) * self._var.double() + m2_x / next_count + rate * (1 - rate) * delta.square()
+        mean = mean.to(self._mean.dtype)
+        var = var.to(self._var.dtype)
+        std = var.sqrt()
+        bad = (~torch.isfinite(mean) | ~torch.isfinite(var) | ~torch.isfinite(std) | (var < 0)).any()
+        if globally_bad(bad):
+            raise FloatingPointError("Normalizer candidate is invalid; running statistics were not changed")
+        self.count.copy_(next_count)
+        self._mean.copy_(mean)
+        self._var.copy_(var)
+        self._std.copy_(std)
 
     @torch.jit.unused
     def inverse(self, y: torch.Tensor) -> torch.Tensor:

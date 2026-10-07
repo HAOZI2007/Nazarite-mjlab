@@ -75,7 +75,7 @@ def _make_wtw_behavior_command() -> WTWBehaviorCommandCfg:
     # 步频适配，避免直接引入过宽的行为分布而破坏已收敛的接触时序。
     frequency_range=(2.0, 4.0),
     # body_height 是相对 0.32 m 基础高度的偏移；0.0 即目标 0.32 m。
-    body_height_range=(-0.025, 0.025),
+    body_height_range=(-0.08, 0.025),
     body_pitch_range=(-0.035, 0.035),
     stance_width_range=(0.21, 0.29),
     foot_swing_height_range=(0.055, 0.080),

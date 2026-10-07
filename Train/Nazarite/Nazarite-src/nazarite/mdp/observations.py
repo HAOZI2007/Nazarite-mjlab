@@ -24,6 +24,14 @@ def phase(env, period: float, command_name: str) -> torch.Tensor:
   return result
 
 
+def him_behavior_parameters(env, command_name: str = "behavior") -> torch.Tensor:
+  """Return the two explicit HIM conditions: height and stance width."""
+  command = env.command_manager.get_command(command_name)
+  if command is None or command.ndim != 2 or command.shape[1] < 2:
+    return torch.zeros((env.num_envs, 2), device=env.device)
+  return command[:, :2]
+
+
 def base_com(env, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
   body_ids = asset.indexing.body_ids[asset_cfg.body_ids]

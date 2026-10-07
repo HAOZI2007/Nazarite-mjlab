@@ -576,6 +576,7 @@ def wtw_body_height(
     behavior_command_name: str = "behavior",
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     base_height_target: float = 0.30,
+    terrain_sensor_name: str | None = None,
     command_name: str = "twist",
     command_threshold: float = 0.05,
 ) -> Tensor:
@@ -585,9 +586,9 @@ def wtw_body_height(
     高度。目标高度为 ``base_height_target + body_height_offset``，奖励
     使用官方 jump reward 的负平方误差形式。
 
-    当前任务是平地版本，因此 reference height 为 0，实际高度使用
-    root_link_pos_w[:, 2]；这与官方平地配置中的 reference_heights=0
-    一致。复杂地形训练时应再引入地形参考高度。
+    当提供 ``terrain_sensor_name`` 时，使用局部扫描中最低的有效命中高度
+    作为保守的支撑面参考，使该条件在桥、轮胎和松散填充区上仍表示相对
+    机体高度，而不是固定的世界 Z 高度。
     """
     term = _get_behavior_term(env, behavior_command_name)
     if term is None:
@@ -601,8 +602,28 @@ def wtw_body_height(
     base_target = float(base_height_target)
     if not math.isfinite(base_target):
         base_target = 0.30
+    reference_height = torch.zeros_like(actual)
+    if terrain_sensor_name is not None:
+        try:
+            terrain_sensor = env.scene[terrain_sensor_name]
+            hit_pos = terrain_sensor.data.hit_pos_w
+            distances = terrain_sensor.data.distances
+            valid = (distances >= 0.0) & torch.isfinite(hit_pos[..., 2])
+            hit_z = torch.where(
+                valid,
+                hit_pos[..., 2],
+                torch.full_like(hit_pos[..., 2], float("inf")),
+            )
+            reference_height = hit_z.amin(dim=-1)
+            reference_height = torch.where(
+                torch.isfinite(reference_height),
+                reference_height,
+                torch.zeros_like(reference_height),
+            )
+        except (AttributeError, KeyError, RuntimeError, ValueError):
+            reference_height = torch.zeros_like(actual)
     body_height_offset = _behavior_value(term, "body_height")
-    target = body_height_offset + base_target
+    target = reference_height + body_height_offset + base_target
     # 官方 CoRLRewards._reward_jump：- (body_height - target_height)^2。
     # 奖励项的权重在配置中设置为正值 10.0。
     reward = -torch.square(actual - target)
@@ -625,6 +646,9 @@ def wtw_body_height(
             env.extras["log"]["WTW/body_height_target"] = (
                 (target * active).sum() / active_count
             )
+            env.extras["log"]["WTW/body_height_reference"] = (
+                (reference_height * active).sum() / active_count
+            )
             env.extras["log"]["WTW/body_height_min"] = torch.amin(
                 torch.where(
                     active > 0.0,
@@ -643,6 +667,9 @@ def wtw_body_height(
                 (), device=env.device
             )
             env.extras["log"]["WTW/body_height_target"] = torch.zeros(
+                (), device=env.device
+            )
+            env.extras["log"]["WTW/body_height_reference"] = torch.zeros(
                 (), device=env.device
             )
             env.extras["log"]["WTW/body_height_min"] = torch.zeros(

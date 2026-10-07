@@ -42,6 +42,9 @@ class HIMActorModel(nn.Module):
         history_term_dims: tuple[int, ...] | list[int] | None = None,
         history_order: str | None = None,
         estimator_cfg: dict | None = None,
+        observation_clip: float | None = None,
+        action_clip: float | None = None,
+        action_observation_slice: tuple[int, int] | None = None,
         **kwargs,
     ) -> None:
         """Initialize the HIM actor from TensorDict observation groups."""
@@ -98,6 +101,23 @@ class HIMActorModel(nn.Module):
         self.history_order = history_order
         self.history_term_dims = history_term_dims
         self.register_buffer("history_permutation", self._build_history_permutation(), persistent=False)
+        self.action_clip = action_clip
+        self.observation_clip = observation_clip
+        self.action_observation_slice = action_observation_slice
+        bounds = torch.full((self.history_size, self.num_one_step_obs), float("inf"))
+        if observation_clip is not None:
+            if observation_clip <= 0:
+                raise ValueError("observation_clip must be positive")
+            bounds.fill_(observation_clip)
+        if action_clip is not None:
+            if action_clip <= 0:
+                raise ValueError("action_clip must be positive")
+            if action_observation_slice is not None:
+                start, stop = action_observation_slice
+                if not 0 <= start < stop <= self.num_one_step_obs:
+                    raise ValueError("Invalid action_observation_slice")
+                bounds[:, start:stop] = action_clip
+        self.register_buffer("observation_bounds", bounds.flatten(), persistent=False)
 
         self.obs_normalization = obs_normalization
         self.obs_normalizer = EmpiricalNormalization(self.obs_dim) if obs_normalization else nn.Identity()
@@ -141,7 +161,8 @@ class HIMActorModel(nn.Module):
         if stochastic_output:
             self.distribution.update(mlp_output)
             return self.distribution.sample()
-        return self.distribution.deterministic_output(mlp_output)
+        actions = self.distribution.deterministic_output(mlp_output)
+        return actions.clamp(-self.action_clip, self.action_clip) if self.action_clip is not None else actions
 
     def get_latent(self, obs: TensorDict, masks=None, hidden_state=None) -> torch.Tensor:
         """Build the policy input from current history and HIM estimates."""
@@ -163,9 +184,10 @@ class HIMActorModel(nn.Module):
                 raise ValueError(f"Expected history length {self.history_size} for all HIM history groups")
             # Concatenate terms within each frame, then reverse oldest->newest
             # manager history to the current->oldest layout used by HIM.
-            return torch.cat(values, dim=-1).flip(dims=(1,)).flatten(start_dim=1)
-        obs_history = torch.cat(values, dim=-1)
-        return obs_history.index_select(-1, self.history_permutation)
+            obs_history = torch.cat(values, dim=-1).flip(dims=(1,)).flatten(start_dim=1)
+        else:
+            obs_history = torch.cat(values, dim=-1).index_select(-1, self.history_permutation)
+        return obs_history.clamp(-self.observation_bounds, self.observation_bounds)
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state=None) -> None:
         """Reset policy state; HIM is feed-forward and has no recurrent state."""
@@ -292,15 +314,19 @@ class _TorchHIMActorModel(nn.Module):
         self.deterministic_output = copy.deepcopy(model.distribution.as_deterministic_output_module())
         self.num_one_step_obs = model.num_one_step_obs
         self.num_latent = model.estimator.num_latent
+        self.action_clip = model.action_clip
+        self.register_buffer("observation_bounds", model.observation_bounds.detach().clone())
 
     def forward(self, obs_history: torch.Tensor) -> torch.Tensor:
         """Compute actions from frame-major history ordered current to oldest."""
+        obs_history = obs_history.clamp(-self.observation_bounds, self.observation_bounds)
         obs_history = self.obs_normalizer(obs_history)
         parts = self.estimator_encoder(obs_history)
         velocity = parts[..., :3]
         latent = torch.nn.functional.normalize(parts[..., 3:], dim=-1, p=2.0)
         actor_input = torch.cat((obs_history[..., : self.num_one_step_obs], velocity, latent), dim=-1)
-        return self.deterministic_output(self.mlp(actor_input))
+        actions = self.deterministic_output(self.mlp(actor_input))
+        return actions.clamp(-self.action_clip, self.action_clip) if self.action_clip is not None else actions
 
     @torch.jit.export
     def reset(self) -> None:

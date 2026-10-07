@@ -54,6 +54,8 @@ class PlayConfig:
   onnx_filename: str = "policy.onnx"
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
+  delta_map_ablation: Literal["none", "zero", "shuffle"] = "none"
+  """DELTA-only causal test: remove or mismatch camera terrain channels."""
 
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
@@ -66,6 +68,16 @@ def run_play(task_id: str, cfg: PlayConfig):
 
   env_cfg = load_env_cfg(task_id, play=True)
   agent_cfg = load_rl_cfg(task_id)
+
+  if cfg.delta_map_ablation != "none":
+    delta_group = env_cfg.observations.get("delta_map")
+    if delta_group is None or "delta_map" not in delta_group.terms:
+      raise ValueError("Selected task has no DELTA map observation to ablate")
+    delta_term = delta_group.terms["delta_map"]
+    if delta_term.func.__name__ != "delta_depth_image":
+      raise ValueError("Map ablation is supported only for the D435 DELTA task")
+    delta_term.params["ablation_mode"] = cfg.delta_map_ablation
+    print(f"[INFO]: DELTA map ablation: {cfg.delta_map_ablation}")
 
   DUMMY_MODE = cfg.agent in {"zero", "random"}
   TRAINED_MODE = not DUMMY_MODE
@@ -203,6 +215,7 @@ def run_play(task_id: str, cfg: PlayConfig):
 
       policy = PolicyRandom()
   else:
+    assert resume_path is not None
     runner_cls = load_runner_cls(task_id) or MjlabOnPolicyRunner
     runner = runner_cls(env, asdict(agent_cfg), device=device)
     runner.load(
@@ -212,6 +225,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       runner.export_policy_to_onnx(str(resume_path.parent), cfg.onnx_filename)
       try:
         from mjlab.rl.exporter_utils import attach_metadata_to_onnx, get_base_metadata
+
         attach_metadata_to_onnx(
           str(resume_path.parent / cfg.onnx_filename),
           get_base_metadata(env.unwrapped, "local"),
@@ -236,8 +250,13 @@ def run_play(task_id: str, cfg: PlayConfig):
         break
     if hasattr(model, "enable_attention_cache"):
       model.enable_attention_cache(True)
-      env.unwrapped.debug_policy = model
-      env.unwrapped.delta_attention_enabled = True
+      env.unwrapped.debug_policy = model  # pyright: ignore[reportAttributeAccessIssue]
+      env.unwrapped.delta_attention_enabled = (  # pyright: ignore[reportAttributeAccessIssue]
+        True
+      )
+      env.unwrapped.delta_visual_debug_enabled = (  # pyright: ignore[reportAttributeAccessIssue]
+        True
+      )
 
   _attach_delta_debug(policy)
 

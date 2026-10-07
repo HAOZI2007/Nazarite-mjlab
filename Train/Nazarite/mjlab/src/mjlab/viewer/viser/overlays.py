@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import mujoco
+import numpy as np
 import viser
 
 from mjlab.sensor import CameraSensor
@@ -138,6 +139,7 @@ class ViserCameraOverlays:
   env: _EnvProtocol
   mj_model: mujoco.MjModel
   camera_viewers: list[ViserCameraViewer] | None = None
+  delta_map_viewer: "ViserDeltaMapViewer | None" = None
 
   @property
   def has_cameras(self) -> bool:
@@ -160,6 +162,8 @@ class ViserCameraOverlays:
     self.camera_viewers = [
       ViserCameraViewer(self.server, sensor, self.mj_model) for sensor in camera_sensors
     ]
+    if getattr(self.env.unwrapped, "delta_visual_debug_enabled", False):
+      self.delta_map_viewer = ViserDeltaMapViewer(self.server)
 
   def update(self, sim_data: Any, env_idx: int, scene_offset: Any) -> None:
     """Push latest camera images/frustums to GUI."""
@@ -167,6 +171,8 @@ class ViserCameraOverlays:
       return
     for camera_viewer in self.camera_viewers:
       camera_viewer.update(sim_data, env_idx, scene_offset)
+    if self.delta_map_viewer is not None:
+      self.delta_map_viewer.update(self.env.unwrapped, env_idx)
 
   def cleanup(self) -> None:
     """Cleanup all camera feed widgets."""
@@ -174,6 +180,103 @@ class ViserCameraOverlays:
       return
     for camera_viewer in self.camera_viewers:
       camera_viewer.cleanup()
+    if self.delta_map_viewer is not None:
+      self.delta_map_viewer.cleanup()
+
+
+class ViserDeltaMapViewer:
+  """Synchronized raw-depth/BEV diagnostic images for DELTA play."""
+
+  def __init__(self, server: viser.ViserServer, display_size: int = 160):
+    self._handles: list[viser.GuiImageHandle] = []
+    self._labels = (
+      "DELTA raw depth (0-5m)",
+      "DELTA BEV z (x right, y down)",
+      "DELTA observed support (x right, y down)",
+      "DELTA confidence (x right, y down)",
+    )
+    self._display_size = display_size
+    for label in self._labels:
+      self._handles.append(
+        server.gui.add_image(
+          np.zeros((display_size, display_size, 3), dtype=np.uint8),
+          label=label,
+          format="jpeg",
+        )
+      )
+
+  @staticmethod
+  def _resize(
+    image: np.ndarray, size: int, *, border: tuple[int, int, int] = (80, 80, 80)
+  ) -> np.ndarray:
+    """Nearest-neighbor resize with letterboxing and orientation markers."""
+    if image.ndim == 2:
+      image = image[..., None]
+    if image.shape[-1] == 1:
+      image = np.repeat(image, 3, axis=-1)
+    height, width = image.shape[:2]
+    scale = max(1, min(size // max(height, 1), size // max(width, 1)))
+    resized = np.repeat(np.repeat(image, scale, axis=0), scale, axis=1)
+    canvas = np.empty((size, size, 3), dtype=np.uint8)
+    canvas[...] = np.asarray(border, dtype=np.uint8)
+    offset_y = (size - resized.shape[0]) // 2
+    offset_x = (size - resized.shape[1]) // 2
+    canvas[
+      offset_y : offset_y + resized.shape[0], offset_x : offset_x + resized.shape[1]
+    ] = resized
+    # x increases to the right; y decreases down the image because the first
+    # BEV row is +y. The border and centerline make that convention visible.
+    canvas[offset_y, offset_x : offset_x + resized.shape[1]] = (255, 80, 40)
+    canvas[offset_y : offset_y + resized.shape[0], offset_x] = (40, 180, 255)
+    if resized.shape[0] > 2 and resized.shape[1] > 2:
+      canvas[
+        offset_y + resized.shape[0] // 2, offset_x : offset_x + resized.shape[1]
+      ] = (
+        canvas[offset_y + resized.shape[0] // 2, offset_x : offset_x + resized.shape[1]]
+        * 0.75
+      ).astype(np.uint8)
+    return canvas
+
+  @staticmethod
+  def _gray(value: np.ndarray, low: float = 0.0, high: float = 1.0) -> np.ndarray:
+    normalized = np.clip((value - low) / max(high - low, 1.0e-6), 0.0, 1.0)
+    channel = (normalized * 255.0).astype(np.uint8)
+    return np.repeat(channel[..., None], 3, axis=-1)
+
+  @staticmethod
+  def _heat(value: np.ndarray, low: float, high: float) -> np.ndarray:
+    normalized = np.clip((value - low) / max(high - low, 1.0e-6), 0.0, 1.0)
+    # Blue -> cyan -> yellow -> red, without requiring matplotlib in the viewer.
+    red = np.clip(2.0 * normalized, 0.0, 1.0)
+    green = np.clip(2.0 * (1.0 - np.abs(normalized - 0.5)), 0.0, 1.0)
+    blue = np.clip(2.0 * (1.0 - normalized), 0.0, 1.0)
+    return (np.stack((red, green, blue), axis=-1) * 255.0).astype(np.uint8)
+
+  def update(self, env: Any, env_idx: int) -> None:
+    snapshot = getattr(env, "_delta_visual_debug", None)
+    if snapshot is None:
+      return
+    try:
+      depth = snapshot["depth"][env_idx].detach().cpu().numpy()
+      bev_z = snapshot["bev_z"][env_idx].detach().cpu().numpy()
+      support = snapshot["support"][env_idx].detach().cpu().numpy()
+      confidence = snapshot["confidence"][env_idx].detach().cpu().numpy()
+    except (KeyError, IndexError, RuntimeError):
+      return
+    self._handles[0].image = self._resize(
+      self._gray(depth, 0.0, 5.0), self._display_size, border=(20, 20, 20)
+    )
+    self._handles[1].image = self._resize(
+      self._heat(bev_z, -0.8, 0.8), self._display_size
+    )
+    self._handles[2].image = self._resize(self._gray(support), self._display_size)
+    self._handles[3].image = self._resize(
+      self._heat(confidence, 0.0, 1.0), self._display_size
+    )
+
+  def cleanup(self) -> None:
+    for handle in self._handles:
+      handle.remove()
 
 
 @dataclass

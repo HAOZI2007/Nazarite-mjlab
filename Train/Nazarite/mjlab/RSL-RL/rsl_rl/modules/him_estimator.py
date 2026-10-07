@@ -112,6 +112,7 @@ class HIMEstimator(nn.Module):
         target_slices: tuple[tuple[int, int], ...] | list[tuple[int, int]] | None = None,
         learning_rate: float | None = None,
         gradient_reducer: Callable[[Iterable[nn.Parameter]], None] | None = None,
+        numerics_guard=None,
         lr: float | None = None,
     ) -> tuple[float, float]:
         """Perform one estimator update and return estimation and swap losses."""
@@ -152,6 +153,29 @@ class HIMEstimator(nn.Module):
                 f"{self.num_one_step_obs}, got {velocity_target.shape[-1]} and {target_obs.shape[-1]}"
             )
 
+        if numerics_guard is not None:
+            numerics_guard.check("estimator_input", {
+                "history": obs_history, "velocity_target": velocity_target, "target_obs": target_obs,
+            })
+
+        def optimizer_step(loss):
+            if numerics_guard is not None:
+                numerics_guard.check("estimator_loss", loss, limit=1e8)
+            self.optimizer.zero_grad()
+            loss.backward()
+            if numerics_guard is not None:
+                numerics_guard.gradients("estimator_gradients", self.parameters())
+            if gradient_reducer is not None:
+                gradient_reducer(self.parameters())
+            norm = nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
+            if numerics_guard is not None:
+                numerics_guard.check("estimator_gradient_norm", norm, limit=1e8)
+            self.optimizer.step()
+            if numerics_guard is not None:
+                numerics_guard.check("estimator_parameters", {
+                    "parameters": list(self.parameters()), "optimizer": self.optimizer.state,
+                })
+
         with torch.no_grad():
             normalized_proto = F.normalize(self.proto.weight.data, dim=-1, p=2)
             self.proto.weight.copy_(normalized_proto)
@@ -162,10 +186,7 @@ class HIMEstimator(nn.Module):
                 zero_loss = torch.zeros((), dtype=obs_history.dtype, device=obs_history.device)
                 for parameter in self.parameters():
                     zero_loss = zero_loss + parameter.sum() * 0.0
-                zero_loss.backward()
-                gradient_reducer(self.parameters())
-                nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+                optimizer_step(zero_loss)
             return 0.0, 0.0
 
         encoded = self.encoder(obs_history)
@@ -188,12 +209,7 @@ class HIMEstimator(nn.Module):
         estimation_loss = F.mse_loss(pred_velocity, velocity_target)
         loss = estimation_loss + swap_loss
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        if gradient_reducer is not None:
-            gradient_reducer(self.parameters())
-        nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
-        self.optimizer.step()
+        optimizer_step(loss)
         return estimation_loss.item(), swap_loss.item()
 
     def _validate_history(self, obs_history: torch.Tensor) -> None:

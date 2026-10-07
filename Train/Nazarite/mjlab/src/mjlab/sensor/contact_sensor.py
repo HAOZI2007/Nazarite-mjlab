@@ -148,6 +148,8 @@ class ContactSensorCfg(SensorCfg):
 
   primary: ContactMatch
   secondary: ContactMatch | None = None
+  preserve_order: bool = False
+  """Keep tuple pattern order instead of MJCF entity order for primaries."""
   fields: tuple[str, ...] = ("found", "force")
   reduce: Literal["none", "mindist", "maxforce", "netforce"] = "maxforce"
   num_slots: int = 1
@@ -520,9 +522,9 @@ class ContactSensor(Sensor[ContactData]):
     patterns = [match.pattern] if isinstance(match.pattern, str) else match.pattern
 
     if match.mode == "geom":
-      _, names = ent.find_geoms(patterns)
+      _, names = ent.find_geoms(patterns, preserve_order=self.cfg.preserve_order)
     elif match.mode == "body":
-      _, names = ent.find_bodies(patterns)
+      _, names = ent.find_bodies(patterns, preserve_order=self.cfg.preserve_order)
     elif match.mode == "subtree":
       _, names = ent.find_bodies(patterns)
       if not names:

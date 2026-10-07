@@ -65,6 +65,7 @@ class HIMPPO:
         del kwargs
 
         self.device = device
+        self.numerics_guard = None
         self.is_multi_gpu = multi_gpu_cfg is not None
         self.gpu_global_rank = int(multi_gpu_cfg.get("global_rank", 0)) if multi_gpu_cfg else 0
         self.gpu_world_size = int(multi_gpu_cfg.get("world_size", 1)) if multi_gpu_cfg else 1
@@ -178,6 +179,14 @@ class HIMPPO:
 
     def update(self) -> dict[str, float]:
         """Optimize PPO and HIM losses over the collected rollout."""
+        guard = self.numerics_guard
+        if guard is not None:
+            guard.check("rollout", {
+                "obs": self.storage.observations, "next_obs": self.storage.next_observations,
+                "actions": self.storage.actions, "rewards": self.storage.rewards,
+                "returns": self.storage.returns, "advantages": self.storage.advantages,
+                "values": self.storage.values, "log_prob": self.storage.actions_log_prob,
+            })
         mean_value_loss = 0.0
         mean_surrogate_loss = 0.0
         mean_entropy = 0.0
@@ -195,6 +204,9 @@ class HIMPPO:
             values = self.critic(batch.observations)
             distribution_params = self.actor.output_distribution_params
             entropy = self.actor.output_entropy
+            if guard is not None:
+                guard.check("ppo_forward", {"values": values, "log_prob": actions_log_prob, "entropy": entropy})
+                guard.check("ppo_distribution", distribution_params)
 
             if self.desired_kl is not None and self.schedule == "adaptive":
                 self._update_learning_rate(batch.old_distribution_params, distribution_params)
@@ -217,6 +229,7 @@ class HIMPPO:
                     # with the adaptive PPO learning rate at every update.
                     learning_rate=self.learning_rate,
                     gradient_reducer=self._reduce_estimator_gradients if self.is_multi_gpu else None,
+                    numerics_guard=guard,
                 )
             else:
                 estimation_loss = 0.0
@@ -238,12 +251,22 @@ class HIMPPO:
                 value_loss = (batch.returns - values).pow(2).mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+            if guard is not None:
+                guard.check("ppo_loss", {"loss": loss, "ratio": ratio}, limit=1e8)
             self.optimizer.zero_grad()
             loss.backward()
+            if guard is not None:
+                guard.gradients("ppo_gradients", self._all_parameters())
             if self.is_multi_gpu:
                 self.reduce_parameters()
-            nn.utils.clip_grad_norm_(self._all_parameters(), self.max_grad_norm)
+            grad_norm = nn.utils.clip_grad_norm_(self._all_parameters(), self.max_grad_norm)
+            if guard is not None:
+                guard.check("ppo_gradient_norm", grad_norm, limit=1e8)
             self.optimizer.step()
+            if guard is not None:
+                guard.check("ppo_parameters", {
+                    "parameters": list(self._all_parameters()), "optimizer": self.optimizer.state,
+                })
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
@@ -255,8 +278,13 @@ class HIMPPO:
         if num_updates < 1:
             raise ValueError("num_learning_epochs and num_mini_batches must be positive")
         observations = self.storage.observations.flatten(0, 1)
-        self.actor.update_normalization(observations)
-        self.critic.update_normalization(observations)
+        try:
+            self.actor.update_normalization(observations)
+            self.critic.update_normalization(observations)
+        except FloatingPointError:
+            if guard is not None:
+                guard.fail("normalization", observations)
+            raise
         self.storage.clear()
         return {
             "value": mean_value_loss / num_updates,
@@ -346,31 +374,19 @@ class HIMPPO:
         alg_class, alg_cfg = resolve_class(cfg["algorithm"])
         actor_class, actor_cfg = resolve_class(cfg["actor"])
         critic_class, critic_cfg = resolve_class(cfg["critic"])
-        # Project-level dataclasses include optional fields for CNN/RNN and
-        # custom DELTA models. Remove unset options before constructing the
-        # plain HIM actor and MLP critic. This mirrors MjlabOnPolicyRunner's
-        # config cleanup, which this standalone HIM runner does not inherit.
-        for model_cfg in (actor_cfg, critic_cfg):
-            for key in (
-                "cnn_cfg",
-                "distribution_cfg",
-                "proprio_dim",
-                "map_height",
-                "map_width",
-            ):
-                if model_cfg.get(key) is None:
-                    model_cfg.pop(key, None)
-            for key in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
-                if model_cfg.get("rnn_type") is None:
-                    model_cfg.pop(key, None)
         default_sets = ["actor", "critic"]
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
 
         actor: HIMActorModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **critic_cfg).to(device)
-        storage = HIMRolloutStorage("rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
         if not alg_cfg.get("estimator_obs_groups"):
             alg_cfg["estimator_obs_groups"] = list(cfg["obs_groups"]["critic"])
+        elif isinstance(alg_cfg["estimator_obs_groups"], str):
+            alg_cfg["estimator_obs_groups"] = [alg_cfg["estimator_obs_groups"]]
+        storage = HIMRolloutStorage(
+            "rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device,
+            next_observation_groups=alg_cfg["estimator_obs_groups"],
+        )
         algorithm = alg_class(
             actor,
             critic,
@@ -435,13 +451,24 @@ class HIMPPO:
         extras: dict[str, torch.Tensor],
     ) -> tuple[TensorDict, torch.Tensor]:
         """Resolve true post-step observations and the samples valid for estimator training."""
-        next_observations = obs.clone()
+        # Storage copies these tensors before the runner resets any environments.
+        # Keep only the estimator inputs and avoid cloning the actor's history.
+        next_observations = obs.select(*self.storage.next_observation_groups)
+        terminal_observations = self._get_terminal_observations(extras)
+        if terminal_observations is obs:
+            # The manual-reset runner supplies the unmodified post-step batch.
+            # Every row is valid, including true terminal states.
+            valid = torch.ones((dones.numel(), 1), dtype=torch.bool, device=self.device)
+            return next_observations, valid
+
         done_mask = dones.reshape(-1).bool().to(self.device)
         valid = (~done_mask).view(-1, 1)
-        terminal_observations = self._get_terminal_observations(extras)
         if terminal_observations is None or not done_mask.any():
             return next_observations, valid
 
+        # Auto-reset adapters may provide separate full-batch or done-only
+        # terminal observations. Do not overwrite their post-reset input batch.
+        next_observations = next_observations.clone()
         terminal_observations = terminal_observations.to(self.device)
         copied = False
         required_groups = self.estimator_obs_groups or self.actor.obs_groups

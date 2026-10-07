@@ -29,6 +29,37 @@ def illegal_contact(
   return torch.any(data.found, dim=-1)
 
 
+def sustained_illegal_contact(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  force_threshold: float = 10.0,
+  min_consecutive_steps: int = 2,
+) -> torch.Tensor:
+  """Terminate only after contact persists across sensor substeps."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  data = sensor.data
+  threshold = max(float(force_threshold), 0.0)
+  required = max(int(min_consecutive_steps), 1)
+  history = data.force_history
+  if history is None:
+    if data.force is not None:
+      result = (torch.linalg.vector_norm(data.force, dim=-1) > threshold).any(dim=-1)
+    else:
+      result = torch.any(data.found, dim=-1)
+  else:
+    # [B, N, H] -> one contact state per physics substep.
+    per_step = (torch.linalg.vector_norm(history, dim=-1) > threshold).any(dim=1)
+    if required <= 1:
+      result = per_step.any(dim=-1)
+    elif per_step.shape[-1] < required:
+      result = per_step.all(dim=-1)
+    else:
+      result = per_step.unfold(-1, required, 1).all(dim=-1).any(dim=-1)
+  if hasattr(env, "extras") and "log" in env.extras:
+    env.extras["log"][f"Metrics/{sensor_name}_sustained"] = result.float().mean()
+  return result
+
+
 def out_of_terrain_bounds(
   env: ManagerBasedRlEnv,
   margin: float = 0.3,

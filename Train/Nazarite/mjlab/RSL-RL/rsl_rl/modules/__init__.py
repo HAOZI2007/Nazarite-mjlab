@@ -24,4 +24,14 @@ __all__ = [
     "GaussianDistribution",
     "HeteroscedasticGaussianDistribution",
     "HiddenState",
+    "HIMActorCritic",
 ]
+
+
+def __getattr__(name: str):
+    """Lazily expose the legacy HIM actor name without an import cycle."""
+    if name == "HIMActorCritic":
+        from rsl_rl.models.him_actor_model import HIMActorCritic
+
+        return HIMActorCritic
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

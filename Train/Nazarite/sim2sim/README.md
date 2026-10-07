@@ -4,13 +4,15 @@
 创建 mjlab 的 ManagerBased 环境，而是直接读取 Go2 XML，构造一个简化平面，
 加载已经训练好的 actor，然后以和训练一致的控制频率驱动机器人。
 
-当前支持三种模式：
+当前支持五种模式：
 
 | 模式 | 策略 | 观测维度 | 用途 |
 |---|---|---:|---|
 | `baseline` | `Nazarite-Velocity-Flat-Go2` | 45 | 普通 Grid Adaptive 速度策略 |
 | `wtw` | `Nazarite-Velocity-Flat-Go2-WTW` | 498 | Grid Adaptive + WTW Trot 策略 |
 | `wtw_delta_residual` | `go2_wtw_delta_residual/model_5650.pt` | 2223 | WTW prior + DELTA residual 踏石策略 |
+| `wtw_delta_direct` | `go2_wtw_delta_direct/model_9950.pt` | 2223 | Direct 任务的相机 BEV + 动作融合 |
+| `him` | `go2_him/policy.onnx` | 282 | HIM 历史观测策略和专用障碍场景 |
 
 当前 WTW sim2sim 配置针对已经训练好的 Trot 策略，默认 behavior 为 2.5 Hz、
 0 偏移机体高度、0 pitch、0.25 m 步宽和 0.06 m 摆腿高度。它不是通用的多步态
@@ -23,6 +25,7 @@ Bounding 或 Pacing。
 Train/Nazarite/sim2sim/
 ├── main.py                 # 命令行入口和 MuJoCo 主循环
 ├── config.py               # XML、关节顺序、控制频率、PD 增益和 action scale
+├── wtw_delta_direct/       # Direct 任务相机 BEV、观测和策略兼容加载
 ├── mujoco_io.py            # 加载 XML、创建位置执行器、读写仿真状态
 ├── scene.py                # 添加平面和可视化网格
 ├── policy_runner.py        # 加载 ONNX/.pt actor 并执行推理
@@ -39,6 +42,11 @@ Train/Nazarite/sim2sim/
 │   ├── observation.py      # 498D WTW + 61D DELTA proprioception
 │   ├── policy.py           # WTW + DELTA .pt actor 推理
 │   └── terrain.py          # 踏石场景和 16x26x4 BEV 射线地图
+├── him/
+│   ├── config.py           # HIM 训练 run 和 282D 观测契约
+│   ├── observation.py      # 6 帧、每帧 47D 的当前优先历史
+│   ├── policy.py           # HIM .pt/ONNX 推理
+│   └── scene.py            # 实体楼梯和 320x800x100 mm 墙
 ├── gamepad.py              # Linux evdev 手柄读取
 ├── camera.py               # 跟随机器人相机
 └── math_utils.py           # action 到关节目标的转换
@@ -76,14 +84,20 @@ uv run python -c "import mujoco, numpy, onnxruntime; print('sim2sim dependencies
 ```
 
 如果当前环境提示 `ModuleNotFoundError: No module named 'onnxruntime'`，说明
-项目环境还没有安装 ONNX 推理后端。当前 sim2sim 的 `policy_runner.py` 会在
-启动时导入它，即使本次使用的是 `.pt` 模型也需要该依赖；可先在当前环境补装：
+项目环境还没有安装 ONNX 推理后端。项目现在已将它列为 sim2sim 运行依赖，
+先同步环境：
+
+```bash
+uv sync
+```
+
+如果只想临时补装，也可以使用：
 
 ```bash
 uv pip install onnxruntime
 ```
 
-这是 sim2sim 当前运行环境的依赖要求，不会改变训练任务配置。
+`.pt` 策略不使用 ONNX Runtime，但 `.onnx` 策略必须安装它。这不会改变训练任务配置。
 
 其中：
 
@@ -150,7 +164,42 @@ logs/rsl_rl/go2_wtw_delta_residual/2026-09-22_18-53-22/model_5650.pt
 DELTA 状态和 16x26x4 的局部地形地图，总计 2223D。地图由 MuJoCo 踏石和
 坑底的碰撞几何实时射线采样得到。
 
-### 3.3 调整相机
+### 3.4 HIM 楼梯和墙场景
+
+HIM 模式默认使用：
+
+```text
+logs/rsl_rl/go2_him/2026-09-29_19-00-44/policy.onnx
+```
+
+场景沿机器人前进方向依次放置实体楼梯、平台、平地和墙。墙的实际尺寸为：
+高度 `0.32 m`、横向宽度 `0.80 m`、前进方向厚度 `0.10 m`。
+
+固定速度测试：
+
+```bash
+./mjlab/.venv/bin/python -m sim2sim.main \
+  --mode him \
+  --policy logs/rsl_rl/go2_him/2026-09-29_19-00-44/model_11700.pt \
+  --vx 0.25 \
+  --vy 0.0 \
+  --yaw 0.0 \
+  --no-camera-follow
+```
+
+使用同一 run 导出的 `policy.onnx` 也可以运行。手柄版本如下：
+
+```bash
+./mjlab/.venv/bin/python -m sim2sim.main \
+  --mode him \
+  --gamepad \
+  --max-vx 0.5 \
+  --max-vy 0.5 \
+  --max-yaw 0.5 \
+  --no-camera-follow
+```
+
+### 3.5 调整相机
 
 ```bash
 uv run python -m sim2sim.main \
@@ -375,9 +424,97 @@ uv run python -m sim2sim.main \
 这些检查用于尽早发现“模型和 sim2sim 观测契约不一致”，不代表模型一定已经
 在物理上学会了稳定运动。
 
-## 9. 常见问题
+## 9. WTW + DELTA 深度相机旁路诊断
 
-### 9.1 `Default policy not found`
+WTW sim2sim 可以挂载一台与训练侧 D435 几何一致的 MuJoCo 深度相机，并实时显示
+四个面板：原始深度图、BEV 高程、原始 support 和 hole-fill 后的 confidence。
+该功能是旁路诊断：深度图和 BEV **不会进入 WTW observation，也不会改变 WTW
+动作**。它适合先检查相机视角、分辨率和投影质量，再决定是否让视觉参与控制。
+
+启动 WTW 并打开诊断面板：
+
+```bash
+uv run python -m sim2sim.main \
+  --mode wtw \
+  --policy /absolute/path/to/wtw.onnx \
+  --vx 0.3 \
+  --depth-debug
+```
+
+诊断面板默认直接嵌入 MuJoCo 原生 viewer，以紧凑四格显示。按 `1/2/3/4`
+会将对应面板放大；按 `0` 或 `Esc` 恢复四格。需要旧版独立 matplotlib 窗口时，
+可以额外传入 `--depth-external-window`。按 `H` 可以临时隐藏/显示诊断面板，
+只观察机器人运动。
+
+默认配置在 `sim2sim/wtw_delta_residual/depth_camera.py` 的
+`DepthCameraConfig` 和 `BevConfig` 中。也可以直接命令行覆盖，例如把相机改到
+机体前方、水平安装、竖向分辨率，并扩大 BEV：
+
+```bash
+uv run python -m sim2sim.main \
+  --mode wtw --policy /absolute/path/to/wtw.onnx --depth-debug \
+  --depth-width 72 --depth-height 128 \
+  --depth-pos-x 0.40 --depth-pos-y 0.0 --depth-pos-z 0.05 \
+  --depth-pitch 0 --depth-roll 90 \
+  --bev-height 26 --bev-width 16 \
+  --bev-x-min 0.0 --bev-x-max 2.5 \
+  --bev-y-min -0.8 --bev-y-max 0.8 \
+  --bev-fill-kernel 5
+```
+
+相机位置单位为 Go2 `base_link` 坐标系米；pitch 是向下俯仰角，roll 是绕光轴
+的图像旋转角。只修改分辨率时，D435 内参会按宽高比例缩放；如果有该分辨率的
+实测标定值，应同时传入 `--depth-fx/--depth-fy/--depth-cx/--depth-cy`。当
+`roll=±90` 且宽度小于高度时，程序会自动交换横竖方向的 D435 内参，适配竖装
+相机；显式传入四个内参后则完全以用户参数为准。
+
+BEV 的行方向是 `+y -> -y`，列方向是近处 `x_min` -> 远处 `x_max`。support
+表示原始深度像素实际落入的网格，confidence 还包含局部 hole filling，因此
+稀疏点云和插值区域不会混为一谈。
+
+## 10. Nazarite-WTW-Delta-Direct-Go2 sim2sim
+
+Direct 模式放在 `sim2sim/wtw_delta_direct/`，不会改变旧的
+`wtw_delta_residual` 模式。它和训练任务使用相同的输入契约：D435 深度图先
+投影为 `16x26x5` 的 `(x, y, z, support, confidence)` BEV，再送入
+`WtwDeltaDirectActionModel`。相机 BEV 会真正参与动作计算；`--depth-debug` 只是
+额外显示同一帧的四个诊断面板。
+
+启动 Direct checkpoint：
+
+```bash
+uv run python -m sim2sim.main \
+  --mode wtw_delta_direct \
+  --policy logs/rsl_rl/go2_wtw_delta_direct/2026-09-24_22-11-00/model_9950.pt \
+  --vx 0.3 \
+  --depth-debug \
+  --gamepad
+```
+
+Direct 默认与训练配置一致：相机 `72x128`、位置 `(0.40, 0.0, 0.05)`、水平
+朝前、BEV `x=0..2.0 m`、`y=-0.6..0.6 m`、3x3 局部填洞。相机和 BEV 参数仍可
+用现有的 `--depth-*`、`--bev-*` 参数覆盖；BEV 高度和宽度必须保持 `16x26`，
+否则无法满足 checkpoint 的输入维度。
+
+当前 Direct 日志中的旧 checkpoint 使用单层 `action_fusion` 和旧版 DELTA
+几何 token。`wtw_delta_direct/policy.py` 会根据 checkpoint key 自动选择兼容
+模型；以后用当前源码重新训练产生的新版 Direct checkpoint 也会自动选择新版
+模型。这项兼容逻辑只位于 sim2sim 文件夹，不会改变训练代码。
+
+Direct 模式的动作链路是：
+
+```text
+D435 depth -> camera BEV (16x26x5) -> DELTA encoder
+WTW observation -> WTW prior
+[prior, DELTA proprio, terrain latent] -> action fusion -> 12 joint actions
+```
+
+不要把 Direct 模式写成 `wtw_delta_residual`：后者仍使用旧的向下射线
+`build_delta_map()` 和 4 通道 residual checkpoint。
+
+## 11. 常见问题
+
+### 10.1 `Default policy not found`
 
 默认模型路径是某一次实验的固定路径。换了 run 后请显式指定：
 
@@ -387,7 +524,7 @@ uv run python -m sim2sim.main \
   --policy /absolute/path/to/your_policy.onnx
 ```
 
-### 9.2 `Expected 498D policy input`
+### 10.2 `Expected 498D policy input`
 
 这通常表示：
 
@@ -399,7 +536,7 @@ uv run python -m sim2sim.main \
 不要通过随意补零来解决。应先核对训练日志中的 `params/env.yaml`、观测历史
 长度和 checkpoint 来源。
 
-### 9.3 机器人一启动就倒地
+### 10.3 机器人一启动就倒地
 
 按下面顺序排查：
 
@@ -410,17 +547,31 @@ uv run python -m sim2sim.main \
 5. 再从 `--vx 0.2` 开始逐渐增加速度；
 6. WTW 模式确认 behavior 与训练配置一致。
 
-### 9.4 手柄找不到
+### 10.4 手柄找不到
 
 ```bash
 uv run python -m sim2sim.main --list-gamepads
 ```
 
+运行时必须显式加入 `--gamepad`，例如：
+
+```bash
+uv run python -m sim2sim.main \
+  --mode wtw \
+  --policy /absolute/path/to/wtw.onnx \
+  --gamepad \
+  --depth-debug
+```
+
+当前读取是非阻塞的，不推动摇杆时不会卡住 MuJoCo 控制循环。启动日志会打印
+实际解析出的 `vx/vy/yaw` 轴；如果接收器没有 `ABS_RX`，yaw 会自动尝试
+`ABS_RZ/ABS_Z`，都没有时只禁用 yaw，不影响前向和横向控制。
+
 如果设备没有被发现，检查 Linux 用户是否有读取 `/dev/input/event*` 的权限，
 并用 `--gamepad-device` 指定实际设备。不同接收器可能暴露不同轴名，可用
 `--axis-vx`、`--axis-vy` 和 `--axis-yaw` 覆盖默认值。
 
-## 10. sim2sim 的边界
+## 11. sim2sim 的边界
 
 当前实现适合做以下事情：
 
@@ -447,7 +598,7 @@ phase，不重建训练时的奖励、Grid 课程或 domain randomization。它�
 避免测试超出策略训练分布，建议实际运行时仍限制在训练范围：
 `vx∈[-1, 1]`、`vy∈[-0.5, 0.5]`、`yaw∈[-1, 1]`。
 
-## 11. 相关配置和文档
+## 12. 相关配置和文档
 
 - 训练任务总览：[Train/Nazarite/README.md](../README.md)
 - WTW 实现说明：[WTW-从零手写Walk-These-Ways](../../../docs/WTW-从零手写Walk-These-Ways.md)

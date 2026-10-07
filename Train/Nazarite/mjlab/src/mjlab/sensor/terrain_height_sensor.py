@@ -73,10 +73,10 @@ class TerrainHeightSensor(RayCastSensor):
 
     # True miss: no intersection at all.
     miss = dists < 0
-    all_miss = miss.all(dim=-1, keepdim=True).expand_as(miss)  # [B, F, N]
-    fallback = frame_z.unsqueeze(-1).clamp(0, self.cfg.max_distance)
-    fallback = fallback.expand_as(heights)  # [B, F, N]
-    miss_value = torch.where(all_miss, fallback, self.cfg.max_distance)
+    # ``heights`` is a clearance in metres, not a world-space height. A ray
+    # miss means that no terrain was found within the configured range; using
+    # ``frame_z`` here mixed world coordinates into the relative measurement.
+    miss_value = torch.full_like(heights, float(self.cfg.max_distance))
     heights = torch.where(miss, miss_value, heights)
 
     reduction = self.cfg.reduction

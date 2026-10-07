@@ -12,6 +12,7 @@ def add_simple_grid_scene(
     *,
     half_extent: float = 10.0,
     spacing: float = 0.5,
+    floor_z: float = 0.0,
 ) -> None:
     """Add an infinite flat floor with a non-colliding square grid overlay."""
     if half_extent <= 0.0:
@@ -23,6 +24,7 @@ def add_simple_grid_scene(
     floor.name = "sim2sim_floor"
     floor.type = mujoco.mjtGeom.mjGEOM_PLANE
     floor.size[:] = [half_extent, half_extent, 0.1]
+    floor.pos[2] = floor_z
     floor.rgba[:] = [0.13, 0.14, 0.16, 1.0]
 
     line_count = int(half_extent / spacing)
@@ -38,7 +40,7 @@ def add_simple_grid_scene(
         x_line = spec.worldbody.add_site()
         x_line.name = f"grid_x_{index + line_count:02d}"
         x_line.type = mujoco.mjtGeom.mjGEOM_BOX
-        x_line.pos[:] = [0.0, coordinate, line_height]
+        x_line.pos[:] = [0.0, coordinate, floor_z + line_height]
         x_line.size[:] = [half_extent, line_width, line_height]
         x_line.rgba[:] = color
         x_line.group = 1
@@ -46,7 +48,7 @@ def add_simple_grid_scene(
         y_line = spec.worldbody.add_site()
         y_line.name = f"grid_y_{index + line_count:02d}"
         y_line.type = mujoco.mjtGeom.mjGEOM_BOX
-        y_line.pos[:] = [coordinate, 0.0, line_height]
+        y_line.pos[:] = [coordinate, 0.0, floor_z + line_height]
         y_line.size[:] = [line_width, half_extent, line_height]
         y_line.rgba[:] = color
         y_line.group = 1

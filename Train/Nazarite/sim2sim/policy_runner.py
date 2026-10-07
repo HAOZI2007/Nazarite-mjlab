@@ -4,9 +4,13 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
-import onnxruntime as ort
 import torch
 from torch import nn
+
+try:
+    import onnxruntime as ort
+except ModuleNotFoundError:  # Optional until an ONNX policy is selected.
+    ort: Any = None
 
 try:
     from .config import (
@@ -51,7 +55,7 @@ class PolicyRunner:
         if not policy_path.is_file():
             raise FileNotFoundError(f"Policy not found: {policy_path}")
 
-        self.session: ort.InferenceSession | None = None
+        self.session: Any | None = None
         self.actor: _TorchActor | None = None
         self.input_name = ""
         self.output_name = ""
@@ -61,16 +65,23 @@ class PolicyRunner:
                 expected_obs_dim,
             )
         else:
-            self.session = ort.InferenceSession(
+            onnxruntime_module: Any = ort
+            if onnxruntime_module is None:
+                raise RuntimeError(
+                    "ONNX policy requested but onnxruntime is not installed. "
+                    "Run `uv sync` in Train/Nazarite or `uv pip install onnxruntime`."
+                )
+            self.session = onnxruntime_module.InferenceSession(
                 str(policy_path),
                 providers=["CPUExecutionProvider"],
             )
+            session: Any = self.session
 
             # Older onnxruntime typing stubs incorrectly expose these lists as
             # SparseTensor. The cast is limited to metadata returned by the API;
             # actual input/output arrays are converted with np.asarray below.
-            input_nodes = cast(Any, self.session.get_inputs())
-            output_nodes = cast(Any, self.session.get_outputs())
+            input_nodes = cast(Any, session.get_inputs())
+            output_nodes = cast(Any, session.get_outputs())
             if len(input_nodes) != 1 or len(output_nodes) != 1:
                 raise RuntimeError("Expected an ONNX actor with one input and one output")
 

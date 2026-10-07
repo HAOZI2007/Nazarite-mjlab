@@ -7,6 +7,7 @@ brand-specific driver, so it also works with other XInput/DirectInput pads.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,14 +142,22 @@ class GamepadController:
         self.device = InputDevice(str(Path(device_path)))
         if not _device_has_sticks(self.device):
             raise RuntimeError(f"{self.device.path} is not an analog gamepad")
+        # ``read()`` is blocking by default. A blocking poll would stop the
+        # MuJoCo control loop whenever the user leaves the sticks untouched.
+        os.set_blocking(self.device.fd, False)
 
         self.max_vx = float(max_vx)
         self.max_vy = float(max_vy)
         self.max_yaw = float(max_yaw)
         self.deadzone = float(deadzone)
-        self.axis_vx = resolve_axis(axis_vx)
-        self.axis_vy = resolve_axis(axis_vy)
-        self.axis_yaw = resolve_axis(axis_yaw)
+        self._requested_axes = {
+            "vx": axis_vx,
+            "vy": axis_vy,
+            "yaw": axis_yaw,
+        }
+        self.axis_vx: int | None = None
+        self.axis_vy: int | None = None
+        self.axis_yaw: int | None = None
         self._axis_values: dict[int, int] = {}
         self._pressed_buttons: set[int] = set()
         self._axis_ranges = self._read_axis_ranges()
@@ -170,14 +179,42 @@ class GamepadController:
         for code, abs_info in capabilities.get(ecodes.EV_ABS, []):
             ranges[int(code)] = (int(abs_info.min), int(abs_info.max))
             self._axis_values[int(code)] = int(abs_info.value)
-        required = (self.axis_vx, self.axis_vy, self.axis_yaw)
-        missing = [ecodes.bytype[ecodes.EV_ABS].get(axis, str(axis)) for axis in required if axis not in ranges]
-        if missing:
+        self.axis_vx = self._select_axis(
+            self._requested_axes["vx"], ranges, fallback=("ABS_Y", "ABS_RY")
+        )
+        self.axis_vy = self._select_axis(
+            self._requested_axes["vy"], ranges, fallback=("ABS_X", "ABS_RX")
+        )
+        # Yaw is optional: some two-stick controllers expose no right-stick X
+        # axis. In that case forward/lateral control remains usable and yaw is
+        # held at zero instead of preventing startup.
+        self.axis_yaw = self._select_axis(
+            self._requested_axes["yaw"], ranges, fallback=("ABS_RX", "ABS_RZ", "ABS_Z")
+        )
+        if self.axis_vx is None or self.axis_vy is None:
+            available = sorted(ranges)
             raise RuntimeError(
-                f"Gamepad {self.name!r} does not expose required axes: {missing}. "
-                "Use --axis-vx/--axis-vy/--axis-yaw to select available axes."
+                f"Gamepad {self.name!r} does not expose usable stick axes. "
+                f"Available absolute axes: {available}. "
+                "Use --axis-vx/--axis-vy to select available axes."
             )
         return ranges
+
+    @staticmethod
+    def _select_axis(
+        requested: str | int,
+        ranges: dict[int, tuple[int, int]],
+        *,
+        fallback: tuple[str, ...],
+    ) -> int | None:
+        requested_code = resolve_axis(requested)
+        if requested_code in ranges:
+            return requested_code
+        for candidate in fallback:
+            candidate_code = resolve_axis(candidate)
+            if candidate_code in ranges:
+                return candidate_code
+        return None
 
     def poll(self) -> np.ndarray:
         """Read all pending events; no event means retain the latest stick state."""
@@ -203,7 +240,9 @@ class GamepadController:
         yaw = self._normalized(self.axis_yaw) * self.max_yaw
         return np.array([vx, vy, yaw], dtype=np.float32)
 
-    def _normalized(self, axis: int) -> float:
+    def _normalized(self, axis: int | None) -> float:
+        if axis is None:
+            return 0.0
         minimum, maximum = self._axis_ranges[axis]
         return normalize_axis(self._axis_values[axis], minimum, maximum, self.deadzone)
 
@@ -213,6 +252,16 @@ class GamepadController:
         if code not in self._axis_ranges:
             return None
         return self._normalized(code)
+
+    @property
+    def axis_mapping(self) -> str:
+        """Return the resolved evdev axis mapping for startup diagnostics."""
+        def name(code: int | None) -> str:
+            if code is None:
+                return "disabled"
+            return str(ecodes.bytype[ecodes.EV_ABS].get(code, code))
+
+        return f"vx={name(self.axis_vx)}, vy={name(self.axis_vy)}, yaw={name(self.axis_yaw)}"
 
     def consume_button(self, button: str | int) -> bool:
         """Consume one pressed-button event since the previous poll."""

@@ -96,6 +96,8 @@ uv run play Nazarite-Velocity-Flat-Go2-WTW \
   --checkpoint_file logs/rsl_rl/go2_flat_wtw_independent/<run>/model_2400.pt
 ~~~
 
+在 AutoDL 上训练时，使用 [autodl/README.md](autodl/README.md) 的上传、环境准备、持久化日志和断点续训流程；实际启动命令由 `autodl/train.sh` 转发到同一个 `train` 入口。
+
 `play` 不传 `--checkpoint_file` 时需要 `wandb_run_path`，因此本地检查已训练模型时建议显式传入 checkpoint。WTW play 会保留随机推力作为独立抗扰动检查；网页 `Commands / Behavior` 面板可临时覆盖当前选中环境的行为参数。
 
 WTW 当前默认是固定 Trot，行为频率范围为 `2.0–3.0 Hz`，Grid Adaptive 使用

@@ -1,4 +1,6 @@
 import torch
+from nazarite.delta.critic_model import DeltaPrivilegedCriticModel
+from nazarite.delta.direct_action_model import WtwDeltaDirectActionModel
 from nazarite.delta.wtw_delta_model import WtwDeltaResidualModel
 from tensordict import TensorDict
 
@@ -189,7 +191,9 @@ def test_wtw_checkpoint_restores_distribution_std(tmp_path):
     delta_proprio_group="delta_proprio",
     delta_map_group="delta_map",
     distribution_cfg={
-      "class_name": "GaussianDistribution", "init_std": 0.4, "std_type": "log",
+      "class_name": "GaussianDistribution",
+      "init_std": 0.4,
+      "std_type": "log",
     },
   )
   expected_log_std = torch.linspace(-1.4, -0.8, 12)
@@ -211,8 +215,90 @@ def test_wtw_checkpoint_restores_distribution_std(tmp_path):
     delta_proprio_group="delta_proprio",
     delta_map_group="delta_map",
     distribution_cfg={
-      "class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "log",
+      "class_name": "GaussianDistribution",
+      "init_std": 1.0,
+      "std_type": "log",
     },
     wtw_checkpoint=str(checkpoint),
   )
   assert torch.allclose(restored.distribution.log_std_param, expected_log_std)
+
+
+def test_wtw_delta_direct_action_starts_as_prior_and_uses_delta_latent():
+  obs = TensorDict(
+    {
+      "wtw_proprio": torch.zeros(2, 498),
+      "delta_proprio": torch.zeros(2, 61),
+      "delta_map": torch.zeros(2, 16 * 26 * 5),
+    },
+    batch_size=[2],
+  )
+  model = WtwDeltaDirectActionModel(
+    obs,
+    {"actor": ("wtw_proprio", "delta_proprio", "delta_map")},
+    "actor",
+    12,
+    hidden_dims=(64, 32),
+    map_height=16,
+    map_width=26,
+    map_channels=5,
+    map_extent=(2.5, 1.6),
+    map_center=(1.25, 0.0),
+    prior_group="wtw_proprio",
+    delta_proprio_group="delta_proprio",
+    delta_map_group="delta_map",
+    distribution_cfg=None,
+  )
+  with torch.no_grad():
+    prior = model.wtw_policy(obs["wtw_proprio"])
+    output = model(obs)
+  assert torch.allclose(output, prior)
+  assert not any(parameter.requires_grad for parameter in model.wtw_policy.parameters())
+  assert any(parameter.requires_grad for parameter in model.action_fusion.parameters())
+
+  # The zero output initialization intentionally ignores DELTA on the first
+  # rollout. Open a terrain-latent path to verify that the learned correction
+  # changes the final action once PPO has updated the fusion MLP.
+  with torch.no_grad():
+    first = model.action_fusion[0]
+    output_layer = model.action_fusion[-1]
+    assert isinstance(first, torch.nn.Linear)
+    assert isinstance(output_layer, torch.nn.Linear)
+    first.weight[:, model.output_dim + model.delta_proprio_dim] = 1.0
+    output_layer.weight[:, 0] = 1.0
+  changed = obs.clone()
+  changed["delta_map"] = torch.randn_like(changed["delta_map"])
+  with torch.no_grad():
+    changed_output = model(changed)
+  assert not torch.allclose(changed_output, output)
+  assert "DELTA/direct_action_delta_ratio" in model.get_diagnostics()
+
+
+def test_delta_privileged_critic_encodes_clean_map() -> None:
+  obs = TensorDict(
+    {
+      "critic_privileged": torch.zeros(2, 120),
+      "delta_proprio_critic": torch.zeros(2, 61),
+      "delta_privileged_map": torch.zeros(2, 16 * 26 * 5),
+    },
+    batch_size=[2],
+  )
+  critic = DeltaPrivilegedCriticModel(
+    obs,
+    {
+      "critic": (
+        "critic_privileged",
+        "delta_proprio_critic",
+        "delta_privileged_map",
+      )
+    },
+    "critic",
+    1,
+    hidden_dims=(64, 32),
+  )
+
+  value = critic(obs)
+  value.square().mean().backward()
+
+  assert value.shape == (2, 1)
+  assert any(parameter.grad is not None for parameter in critic.delta.parameters())

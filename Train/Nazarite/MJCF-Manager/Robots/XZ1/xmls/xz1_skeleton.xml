@@ -1,0 +1,127 @@
+<mujoco model="xz1_skeleton">
+  <compiler angle="radian" meshdir="meshes/"/>
+
+  <default>
+    <motor ctrlrange="-1 1" ctrllimited="true"/>
+    <joint actuatorfrclimited="true" type="hinge"/>
+  </default>
+
+  <asset>
+    <mesh name="part_1" file="part_1.stl"/>
+    <mesh name="part_1009" file="part_1009.stl"/>
+    <mesh name="part_1102" file="part_1102.stl"/>
+    <mesh name="part_1150" file="part_1150.stl"/>
+    <mesh name="part_1192" file="part_1192.stl"/>
+    <mesh name="part_418" file="part_418.stl"/>
+    <mesh name="part_511" file="part_511.stl"/>
+    <mesh name="part_559" file="part_559.stl"/>
+    <mesh name="part_601" file="part_601.stl"/>
+    <mesh name="part_613" file="part_613.stl"/>
+    <mesh name="part_706" file="part_706.stl"/>
+    <mesh name="part_754" file="part_754.stl"/>
+    <mesh name="part_796" file="part_796.stl"/>
+    <mesh name="part_808" file="part_808.stl"/>
+    <mesh name="part_907" file="part_907.stl"/>
+    <mesh name="part_955" file="part_955.stl"/>
+    <mesh name="part_997" file="part_997.stl"/>
+  </asset>
+
+  <worldbody>
+    <body name="base_link">
+      <inertial pos="0.0056543944 -0.0022704376 -0.012369998" quat="0.9999095452397823 0.003473630883463265 0.010246560951219726 0.007990194961961494" mass="4.4314145" diaginertia="0.022246508 0.09434957 0.10521614"/>
+      <freejoint name="base_link"/>
+      <geom pos="0 0 0" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_1"/>
+      <body name="FL_hip_link" pos="0.20799999 0.06 -0.0035" quat="0.5000000111721506 0.4999999983012758 0.4999999922252976 0.49999999830127595">
+        <inertial pos="0.0026189203 -2.7455994e-7 0.046436773" quat="0.994468882984991 -0.00014592153043799705 0.10503151031526185 0.00003636462510915181" mass="0.28528353" diaginertia="0.00019675687 0.00017651084 0.00016453979"/>
+        <joint name="FL_hip_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-0.3 0.6" actuatorfrcrange="-10 10"/>
+        <geom pos="-0.060000004 0.0035000035 -0.20799999" quat="0.5000000108237848 -0.4999999891762152 -0.49999999257366384 -0.5000000074263359" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_418"/>
+        <body name="FL_thigh_link" pos="0.0423 0 0.0507" quat="8.204232004018372e-9 0.7071067637133869 -8.204231598552434e-9 0.7071067986597075">
+          <inertial pos="-0.0023377617 0.033147252 0.044629646" quat="0.9939782808815678 0.09924490108802114 -0.028898172025630033 0.036366501032253765" mass="0.47460763" diaginertia="0.0021691112 0.00047346231 0.0020833165"/>
+          <joint name="FL_thigh_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.2217304763960306 1.1344640137963142" actuatorfrcrange="-10 10"/>
+          <geom pos="-0.25869999 -0.003500015 -0.10230001" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_511"/>
+          <body name="FL_calf_link" pos="0 0.24 0.085">
+            <inertial pos="0.017326429 0.070903007 -0.019301211" quat="0.9957833138083655 0.0016150895061768976 -0.006458257524699557 -0.09149466834992065" mass="0.11859236" diaginertia="0.00040877176 0.000020116705 0.0004167659"/>
+            <joint name="FL_calf_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.8325957145940461 -1.1344640137963142" actuatorfrcrange="-10 10"/>
+            <geom pos="-0.25869999 -0.24350002 -0.18730001" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_559"/>
+            <body name="FL_foot_link" pos="-0.0487 -0.3005 -0.0898" quat="0.707106790659974 0.707106771713121 0 0">
+              <inertial pos="0.06444292 0.070697886 -0.50933601" quat="0.9825209641516809 0.00022277345094133798 0.1861509907865884 0.0005603602523678243" mass="0.080939523" diaginertia="0.000036526673 0.000039850595 0.000015076129"/>
+              <geom pos="-0.20999999 -0.097500006 -0.056999988" quat="0.9999999999999988 2.8397432586536436e-8 3.6268323040752685e-8 1.6172142529927234e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_601"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="FR_hip_link" pos="0.20284999 -0.06 -0.0035" quat="0.5000000111721506 0.4999999983012758 0.4999999922252976 0.49999999830127595">
+        <inertial pos="-0.0026196535 -2.0860732e-7 0.051586947" quat="0.9944773585347048 -0.000028356505958218607 -0.10495118984536154 0.00017409131974348825" mass="0.28527881" diaginertia="0.00019674488 0.0001764986 0.00016452141"/>
+        <joint name="FR_hip_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-0.6 0.3" actuatorfrcrange="-10 10"/>
+        <geom pos="0.059999996 0.0035000043 -0.20284999" quat="0.5000000108237848 -0.4999999891762152 -0.49999999257366384 -0.5000000074263359" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_613"/>
+        <body name="FR_thigh_link" pos="-0.0205 0 0.05585" quat="8.204232004018372e-9 0.7071067637133869 -8.204231598552434e-9 0.7071067986597075">
+          <inertial pos="-0.0023915531 0.032899329 -0.066406658" quat="0.9938425480863372 -0.09835056181062413 0.03764634892751124 0.0344515459336629" mass="0.4746068" diaginertia="0.002174722 0.00047614946 0.0020894505"/>
+          <joint name="FR_thigh_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.57 1.1344640137963142" actuatorfrcrange="-10 10"/>
+          <geom pos="-0.25869999 -0.00350002 0.080499993" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_706"/>
+          <body name="FR_calf_link" pos="0 0.24 -0.0663">
+            <inertial pos="0.01732618 0.070903046 -0.021184508" quat="0.9957817062354434 -0.0017398519934224829 0.006646779974871823 -0.09149637565409759" mass="0.1185924" diaginertia="0.00040879044 0.000020134134 0.00041676753"/>
+            <joint name="FR_calf_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.8325957145940461 -1.1344640137963142" actuatorfrcrange="-10 10"/>
+            <geom pos="-0.25869999 -0.24350002 0.14679999" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_754"/>
+            <body name="FR_foot_link" pos="-0.0487 -0.3005 0.2443" quat="0.707106790659974 0.707106771713121 0 0">
+              <inertial pos="0.064442876 -0.26570212 -0.50933553" quat="0.9825211765715165 0.00022286519922231745 0.18614986935043465 0.0005604109580444601" mass="0.080939528" diaginertia="0.00003652592 0.000039849836 0.000015076125"/>
+              <geom pos="-0.20999999 -0.097500006 -0.056999983" quat="0.9999999999999988 2.8397432586536436e-8 3.6268323040752685e-8 1.6172142529927234e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_796"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="RL_hip_link" pos="-0.20285001 0.06 -0.0035" quat="0.5000000111721506 0.4999999983012758 0.4999999922252976 0.49999999830127595">
+        <inertial pos="0.0026185549 -2.1708204e-7 -0.05158888" quat="0.9944031260192799 0.0008540100665812911 -0.1056484895770759 0.00030046625879719607" mass="0.28527957" diaginertia="0.00019663835 0.00017638627 0.00016451597"/>
+        <joint name="RL_hip_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-0.3 0.6" actuatorfrcrange="-10 10"/>
+        <geom pos="-0.059999996 0.0034999957 0.20285001" quat="0.5000000108237848 -0.4999999891762152 -0.49999999257366384 -0.5000000074263359" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_1009"/>
+        <body name="RL_thigh_link" pos="0.013543011 0 -0.05585" quat="8.204232004018372e-9 0.7071067637133869 -8.204231598552434e-9 0.7071067986597075">
+          <inertial pos="-0.0023377692 0.033147253 0.073386637" quat="0.9939782861104882 0.0992448936116473 -0.02889795388692013 0.03636655185769496" mass="0.47460764" diaginertia="0.0021691112 0.00047346221 0.0020833164"/>
+          <joint name="RL_thigh_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.57 1.1344640137963142" actuatorfrcrange="-10 10"/>
+          <geom pos="0.25870001 -0.0034999802 -0.073543004" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_1102"/>
+          <body name="RL_calf_link" pos="0 0.24 0.070256989">
+            <inertial pos="0.017326427 0.070903008 0.024198789" quat="0.9957833143614002 0.0016150866070738683 -0.006458271428286384 -0.09149466140073462" mass="0.11859235" diaginertia="0.00040877178 0.000020116701 0.00041676591"/>
+            <joint name="RL_calf_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.8325957145940461 -1.1344640137963142" actuatorfrcrange="-10 10"/>
+            <geom pos="0.25870001 -0.24349998 -0.14379999" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_1150"/>
+            <body name="RL_foot_link" pos="0.4687 -0.3005 -0.0463" quat="0.707106790659974 0.707106771713121 0 0">
+              <inertial pos="-0.45295708 0.070697885 -0.50933601" quat="0.9825209736875771 0.00022275796083605045 0.18615094069865779 0.000560285562102852" mass="0.080939524" diaginertia="0.000036526672 0.000039850594 0.00001507613"/>
+              <geom pos="-0.20999999 -0.097499991 -0.057000022" quat="0.9999999999999988 2.8397432586536436e-8 3.6268323040752685e-8 1.6172142529927234e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_1192"/>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="RR_hip_link" pos="-0.20285001 -0.06 -0.0035" quat="0.5000000111721506 0.4999999983012758 0.4999999922252976 0.49999999830127595">
+        <inertial pos="-0.0026092703 -0.0000017138742 -0.05153463" quat="0.9945395511144771 -0.0003393954403803254 0.10435966011694506 -0.00016558993018555944" mass="0.28545501" diaginertia="0.00019760858 0.00017742712 0.00016450385"/>
+        <joint name="RR_hip_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-0.6 0.3" actuatorfrcrange="-10 10"/>
+        <geom pos="0.060000004 0.0034999966 0.20285001" quat="0.5000000108237848 -0.4999999891762152 -0.49999999257366384 -0.5000000074263359" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_808"/>
+        <body name="RR_thigh_link" pos="-0.0453 0 -0.05585" quat="8.204232004018372e-9 0.7071067637133869 -8.204231598552434e-9 0.7071067986597075">
+          <inertial pos="-0.0023917636 0.032899328 -0.041606658" quat="0.9938452043895719 -0.09834790643437874 0.037579643165980135 0.03445532515218077" mass="0.47460681" diaginertia="0.002174719 0.00047613802 0.0020894391"/>
+          <joint name="RR_thigh_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.57 1.1344640137963142" actuatorfrcrange="-10 10"/>
+          <geom pos="0.25870001 -0.0034999851 0.10530001" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_907"/>
+          <body name="RR_calf_link" pos="0 0.24 -0.0415">
+            <inertial pos="0.017326179 0.070903043 -0.021184508" quat="0.9957817059618455 -0.001739853292944441 0.006646779673045575 -0.09149637862895833" mass="0.11859239" diaginertia="0.00040879036 0.000020134134 0.00041676744"/>
+            <joint name="RR_calf_joint" pos="0 0 0" type="hinge" axis="0 0 1" range="-1.8325957145940461 -1.1344640137963142" actuatorfrcrange="-10 10"/>
+            <geom pos="0.25870001 -0.24349999 0.14680001" quat="0.7071067553046334 0.7071068070684596 1.4210145210899492e-8 3.708100893020339e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_955"/>
+            <body name="RR_foot_link" pos="0.4687 -0.3005 0.2443" quat="0.707106790659974 0.707106771713121 0 0">
+              <inertial pos="-0.45295712 -0.26570212 -0.50933553" quat="0.9825211765775502 0.00022286522922368592 0.1861498693515778 0.0005603999880479397" mass="0.080939534" diaginertia="0.000036525922 0.000039849838 0.000015076127"/>
+              <geom pos="-0.20999999 -0.097499991 -0.057000017" quat="0.9999999999999988 2.8397432586536436e-8 3.6268323040752685e-8 1.6172142529927234e-8" contype="0" conaffinity="0" group="1" density="0" rgba="1 1 1 1" type="mesh" mesh="part_997"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="FL_calf_joint" joint="FL_calf_joint"/>
+    <motor name="FL_hip_joint" joint="FL_hip_joint"/>
+    <motor name="FL_thigh_joint" joint="FL_thigh_joint"/>
+    <motor name="FR_calf_joint" joint="FR_calf_joint"/>
+    <motor name="FR_hip_joint" joint="FR_hip_joint"/>
+    <motor name="FR_thigh_joint" joint="FR_thigh_joint"/>
+    <motor name="RL_calf_joint" joint="RL_calf_joint"/>
+    <motor name="RL_hip_joint" joint="RL_hip_joint"/>
+    <motor name="RL_thigh_joint" joint="RL_thigh_joint"/>
+    <motor name="RR_calf_joint" joint="RR_calf_joint"/>
+    <motor name="RR_hip_joint" joint="RR_hip_joint"/>
+    <motor name="RR_thigh_joint" joint="RR_thigh_joint"/>
+  </actuator>
+</mujoco>

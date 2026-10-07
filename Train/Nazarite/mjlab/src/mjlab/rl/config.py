@@ -61,6 +61,10 @@ class RslRlModelCfg:
   residual_joint_scales: Tuple[float, ...] | None = None
   residual_gate_bias: float = -2.0
   residual_activation: str = "softsign"
+  privileged_map_group: str | None = None
+  visual_history_group: str | None = None
+  distillation_latent_coef: float | None = None
+  distillation_action_coef: float | None = None
 
 
 @dataclass

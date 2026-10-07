@@ -71,15 +71,23 @@ class HIMRolloutStorage(RolloutStorage):
         obs: TensorDict,
         actions_shape: tuple[int, ...] | list[int],
         device: str = "cpu",
+        *,
+        next_observation_groups: tuple[str, ...] | list[str] | None = None,
     ) -> None:
-        """Allocate the standard rollout fields and a next-observation buffer."""
+        """Keep all current observations, but only requested next-observation groups."""
         if training_type != "rl":
             raise ValueError("HIMRolloutStorage only supports reinforcement-learning rollouts")
+        self.next_observation_groups = tuple(
+            obs.keys() if next_observation_groups is None else next_observation_groups
+        )
+        if not self.next_observation_groups:
+            raise ValueError("HIM storage requires at least one next-observation group")
+        next_obs = obs.select(*self.next_observation_groups)
         super().__init__(training_type, num_envs, num_transitions_per_env, obs, actions_shape, device)
         self.next_observations = TensorDict(
             {
                 key: torch.zeros(num_transitions_per_env, *value.shape, dtype=value.dtype, device=device)
-                for key, value in obs.items()
+                for key, value in next_obs.items()
             },
             batch_size=[num_transitions_per_env, num_envs],
             device=device,
@@ -93,6 +101,7 @@ class HIMRolloutStorage(RolloutStorage):
         next_observations = getattr(transition, "next_observations", None)
         if next_observations is None:
             raise ValueError("HIM transitions must provide next_observations")
+        next_observations = next_observations.select(*self.next_observation_groups)
         super().add_transition(transition)
         self.next_observations[self.step - 1].copy_(next_observations)
         valid = transition.next_observations_valid

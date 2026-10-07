@@ -47,6 +47,16 @@ from nazarite.config.robot_config.go2_cfg import (
 )
 from nazarite.mdp import observations as custom_observations
 from nazarite.mdp import rewards as custom_rewards
+from nazarite.mdp import terminations as custom_terminations
+from nazarite.mdp.commands import HimBehaviorCommandCfg
+from nazarite.mdp.him_numerics import configure_him_observations
+from nazarite.terrains import (
+  BoxHeightLimitFrameTerrainCfg,
+  BoxHighWallTerrainCfg,
+  BoxGravelTerrainCfg,
+  BoxSingleBridgeTerrainCfg,
+  BoxTireArrayTerrainCfg,
+)
 
 HIM_LINK_MASS_RANGE = (0.8, 1.2)
 HIM_EFFORT_LIMIT_RANGE = (0.9, 1.1)
@@ -54,20 +64,31 @@ HIM_EFFORT_LIMIT_RANGE = (0.9, 1.1)
 HIM_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
   curriculum=True,
   size=(8.0, 8.0),
-  num_rows=10,
-  num_cols=20,
+  num_rows=8,
+  num_cols=7,
   border_width=25.0,
   sub_terrains={
-    "flat": terrain_gen.BoxFlatTerrainCfg(proportion=0.1),
-    "stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
-      proportion=0.3, step_height_range=(0.05, 0.15), step_width=0.3, platform_width=3.0,
+    "height_limit_frame": BoxHeightLimitFrameTerrainCfg(proportion=0.2),
+    "high_wall": BoxHighWallTerrainCfg(proportion=0.2),
+    "gravel_rough": BoxGravelTerrainCfg(proportion=0.2),
+    "tire_array": BoxTireArrayTerrainCfg(proportion=0.2),
+    "single_bridge": BoxSingleBridgeTerrainCfg(proportion=0.2),
+    # Existing primitive terrain generators provide both ascending and
+    # descending pyramid stair layouts.  The central platform is used as the
+    # spawn area, leaving a clear approach before the first step.
+    "stairs_up": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.1,
+      step_height_range=(0.02, 0.14),
+      step_width=0.35,
+      platform_width=0.8,
+      border_width=0.25,
     ),
-    "inverted_pyramid_stairs": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-      proportion=0.4, step_height_range=(0.05, 0.15), step_width=0.3, platform_width=3.0,
-    ),
-    "discrete_obstacles": terrain_gen.BoxRandomGridTerrainCfg(
-      proportion=0.2, grid_width=0.4, grid_height_range=(0.0, 0.1),
-      platform_width=1.0,
+    "stairs_down": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.1,
+      step_height_range=(0.02, 0.14),
+      step_width=0.35,
+      platform_width=0.8,
+      border_width=0.25,
     ),
   },
 )
@@ -114,6 +135,7 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "base_ang_vel": ObservationTermCfg(func=envs_mdp.builtin_sensor, params={"sensor_name": "robot/imu_ang_vel"}, noise=Unoise(n_min=-0.2, n_max=0.2)),
     "projected_gravity": ObservationTermCfg(func=envs_mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)),
     "command": ObservationTermCfg(func=envs_mdp.generated_commands, params={"command_name": "twist"}),
+    "behavior": ObservationTermCfg(func=custom_observations.him_behavior_parameters, params={"command_name": "behavior"}),
     "phase": ObservationTermCfg(func=custom_observations.phase, params={"period": 0.6, "command_name": "twist"}),
     "joint_pos": ObservationTermCfg(func=envs_mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)),
     "joint_vel": ObservationTermCfg(func=envs_mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5)),
@@ -126,10 +148,28 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "foot_contact": ObservationTermCfg(func=custom_observations.foot_contact, params={"sensor_name": "feet_ground_contact"}),
     "height_scan": ObservationTermCfg(func=envs_mdp.height_scan, params={"sensor_name": "terrain_scan"}, scale=1.0 / terrain_scan.max_distance),
   }
+
+  # Match the reference HIM observation-latency randomization.  The actor
+  # receives delayed proprioception/IMU data, while the privileged critic and
+  # HIM estimator targets remain current and delay-free.
+  for term_name in ("base_ang_vel", "projected_gravity", "joint_pos", "joint_vel"):
+    actor_terms[term_name].delay_min_lag = 0
+    actor_terms[term_name].delay_max_lag = 2
+    actor_terms[term_name].delay_hold_prob = 0.3
+    actor_terms[term_name].delay_update_period = 10
+  for term in critic_terms.values():
+    term.delay_min_lag = 0
+    term.delay_max_lag = 0
+    term.delay_hold_prob = 0.0
+    term.delay_update_period = 0
+
   observations = {
     "actor": ObservationGroupCfg(terms=actor_terms, concatenate_terms=True, enable_corruption=True, history_length=6, flatten_history_dim=False),
     "critic": ObservationGroupCfg(terms=critic_terms, concatenate_terms=True, enable_corruption=False, history_length=1, flatten_history_dim=True),
   }
+  # Keep raw-value diagnostics and the same clipping contract used by exports.
+  numerical_cfg = type("_HimObservationCfg", (), {"observations": observations})()
+  configure_him_observations(numerical_cfg)
   actions: dict[str, ActionTermCfg] = {
     "joint_pos": JointPositionActionCfg(entity_name="robot", actuator_names=(".*",), scale=GO2_ACTION_SCALE, use_default_offset=True),
   }
@@ -138,6 +178,14 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
       entity_name="robot", resampling_time_range=(8.0, 12.0), rel_standing_envs=0.05,
       rel_forward_envs=0.1, rel_heading_envs=0.0, heading_command=False, debug_vis=True,
       ranges=UniformVelocityCommandCfg.Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=None),
+    ),
+    "behavior": HimBehaviorCommandCfg(
+      entity_name="robot",
+      resampling_time_range=(10.0, 20.0),
+      body_height_range=(-0.10, 0.025),
+      stance_width_range=(0.18, 0.29),
+      freeze_when_standing=True,
+      debug_vis=False,
     ),
   }
   events = {
@@ -152,8 +200,14 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "pseudo_inertia": EventTermCfg(func=dr.pseudo_inertia, mode="startup", params={"asset_cfg": SceneEntityCfg("robot"), "alpha_range": (0.5 * math.log(HIM_LINK_MASS_RANGE[0]), 0.5 * math.log(HIM_LINK_MASS_RANGE[1])), "distribution": "uniform"}),
   }
   rewards = {
-    "track_linear_velocity": RewardTermCfg(func=velocity_mdp.track_linear_velocity, weight=1.0, params={"command_name": "twist", "std": math.sqrt(0.25)}),
-    "track_angular_velocity": RewardTermCfg(func=velocity_mdp.track_angular_velocity, weight=1.0, params={"command_name": "twist", "std": math.sqrt(0.5)}),
+    # Track each commanded axis independently.  This is the same composition
+    # used by the WTW/DELTA tasks: lateral or yaw error cannot be hidden by a
+    # good forward-velocity score, which gives straighter commanded walking.
+    "track_velocity_x": RewardTermCfg(func=custom_rewards.track_velocity_x, weight=0.5, params={"command_name": "twist", "std": math.sqrt(0.25), "asset_cfg": SceneEntityCfg("robot")}),
+    "track_velocity_y": RewardTermCfg(func=custom_rewards.track_velocity_y, weight=0.5, params={"command_name": "twist", "std": math.sqrt(0.25), "asset_cfg": SceneEntityCfg("robot")}),
+    "track_yaw_velocity": RewardTermCfg(func=custom_rewards.track_yaw_velocity, weight=1.0, params={"command_name": "twist", "std": math.sqrt(0.5), "asset_cfg": SceneEntityCfg("robot")}),
+    # Keep vertical velocity regularization separate from horizontal tracking.
+    "lin_vel_z": RewardTermCfg(func=custom_rewards.lin_vel_z_l2, weight=-0.5, params={"asset_cfg": SceneEntityCfg("robot")}),
     "body_orientation_l2": RewardTermCfg(func=custom_rewards.body_orientation_l2, weight=-0.2, params={"asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,))}),
     "pose": RewardTermCfg(func=velocity_mdp.variable_posture, weight=0.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*"), "command_name": "twist", "std_standing": {}, "std_walking": {}, "std_running": {}, "walking_threshold": 0.1, "running_threshold": 1.5}),
     "body_ang_vel": RewardTermCfg(func=velocity_mdp.body_angular_velocity_penalty, weight=-0.05, params={"asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,))}),
@@ -165,29 +219,46 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.01),
     "joint_torques_l2": RewardTermCfg(func=envs_mdp.joint_torques_l2, weight=-2.0e-5),
     "hip_pos": RewardTermCfg(func=custom_rewards.hip_joint_deviation_penalty, weight=-0.1, params={"command_name": "twist"}),
-    "foot_gait": RewardTermCfg(func=custom_rewards.feet_gait, weight=0.01, params={"period": 0.6, "offset": [0.0, 0.5], "threshold": 0.56, "command_threshold": 0.1, "command_name": "twist", "sensor_name": "feet_ground_contact"}),
+    "foot_gait": RewardTermCfg(func=custom_rewards.feet_gait, weight=0.5, params={"period": 0.6, "offset": [0.0, 0.5, 0.5, 0.0], "threshold": 0.56, "command_threshold": 0.1, "command_name": "twist", "sensor_name": "feet_ground_contact"}),
     "foot_clearance": RewardTermCfg(func=velocity_mdp.feet_clearance, weight=-0.01, params={"target_height": 0.08, "height_sensor_name": "feet_terrain_height", "command_name": "twist", "command_threshold": 0.1, "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES)}),
     "foot_slip": RewardTermCfg(func=velocity_mdp.feet_slip, weight=-0.05, params={"sensor_name": "feet_ground_contact", "command_name": "twist", "command_threshold": 0.1, "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES)}),
     "soft_landing": RewardTermCfg(func=velocity_mdp.soft_landing, weight=-1e-3, params={"sensor_name": "feet_ground_contact", "command_name": "twist", "command_threshold": 0.1}),
     "stand_still": RewardTermCfg(func=custom_rewards.stand_still, weight=-1.0, params={"command_name": "twist", "command_threshold": 0.1, "asset_cfg": SceneEntityCfg("robot", joint_names=".*")}),
-    "leg_collision": RewardTermCfg(func=velocity_mdp.illegal_contact, weight=-1.0, params={"sensor_name": "leg_ground_contact", "force_threshold": 1.0}),
+    # Only the two requested morphology conditions are trained.  No WTW gait,
+    # frequency, phase, pitch, or swing-height reward is active in HIM.
+    "him_body_height": RewardTermCfg(func=custom_rewards.him_body_height, weight=20.0, params={"command_name": "behavior", "asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,)), "base_height_target": 0.32, "terrain_sensor_name": "terrain_scan"}),
+    "him_stance_width": RewardTermCfg(func=custom_rewards.him_stance_width, weight=0.50, params={"command_name": "behavior", "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES), "std": 0.035}),
+    "nonfoot_ground_touch": RewardTermCfg(func=velocity_mdp.illegal_contact, weight=-3.0, params={"sensor_name": "nonfoot_ground_touch", "force_threshold": 1.0}),
+    "leg_collision": RewardTermCfg(func=velocity_mdp.illegal_contact, weight=-2.0, params={"sensor_name": "leg_ground_contact", "force_threshold": 1.0}),
   }
   terminations = {
     "time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True),
     "fell_over": TerminationTermCfg(func=envs_mdp.bad_orientation, params={"limit_angle": math.radians(70.0)}),
+    "bridge_fall": TerminationTermCfg(
+      func=custom_terminations.fell_from_single_bridge,
+      params={
+        "terrain_name": "single_bridge",
+        "bridge_width": 0.30,
+        "bridge_height": 0.10,
+        "base_height_target": 0.32,
+        "behavior_command_name": "behavior",
+        "drop_margin": 0.10,
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    ),
   }
   curriculum = {
     "terrain_levels": CurriculumTermCfg(func=velocity_mdp.terrain_levels_vel, params={"command_name": "twist"}),
     "command_vel": CurriculumTermCfg(func=velocity_mdp.commands_vel, params={"command_name": "twist", "velocity_stages": [{"step": 0, "lin_vel_x": (-0.5, 1.0), "lin_vel_y": (-0.5, 0.5), "ang_vel_z": (-0.5, 0.5)}, {"step": 350_000, "lin_vel_x": (-1.0, 1.0), "lin_vel_y": (-1.0, 1.0), "ang_vel_z": (-1.0, 1.0)}]}),
   }
   cfg = ManagerBasedRlEnvCfg(
-    scene=SceneCfg(terrain=TerrainEntityCfg(terrain_type="generator", terrain_generator=deepcopy(HIM_COMPLEX_TERRAINS_CFG), max_init_terrain_level=5), sensors=(terrain_scan, root_angmom, feet_ground, feet_height, nonfoot_ground, leg_ground), entities={"robot": get_go2_cfg()}, num_envs=4096, extent=2.0),
+    scene=SceneCfg(terrain=TerrainEntityCfg(terrain_type="generator", terrain_generator=deepcopy(HIM_COMPLEX_TERRAINS_CFG), max_init_terrain_level=5), sensors=(terrain_scan, root_angmom, feet_ground, feet_height, nonfoot_ground, leg_ground), entities={"robot": get_go2_cfg()}, num_envs=900, extent=2.0),
     observations=observations, actions=actions, commands=commands, events=events, rewards=rewards,
     terminations=terminations, curriculum=curriculum,
     metrics={"mean_action_acc": MetricsTermCfg(func=envs_mdp.mean_action_acc)},
     viewer=ViewerConfig(origin_type=ViewerConfig.OriginType.ASSET_BODY, entity_name="robot", body_name=GO2_BASE_BODY, distance=3.0, elevation=-5.0, azimuth=90.0),
-    sim=SimulationCfg(nconmax=256, njmax=1500, contact_sensor_maxmatch=500, mujoco=MujocoCfg(timestep=0.005, iterations=10, ls_iterations=20)),
-    decimation=4, episode_length_s=20.0, auto_reset=play,
+    sim=SimulationCfg(nconmax=256, njmax=1500, contact_sensor_maxmatch=500, mujoco=MujocoCfg(timestep=0.002, iterations=10, ls_iterations=20)),
+    decimation=10, episode_length_s=20.0, auto_reset=play,
   )
   if play:
     cfg.scene.num_envs = 1
