@@ -13,6 +13,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.tasks.velocity.mdp.terrain_utils import terrain_normal_from_sensors
 from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse, quat_apply_yaw
+from mjlab.utils.lab_api.string import resolve_matching_names_values
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -23,6 +24,79 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 _SAFE_STATE_LIMIT = 100.0
 _SAFE_REWARD_LIMIT = 1.0e6
+
+
+class terrain_variable_posture:
+    """Relax joint-pose regularization over locally rough terrain."""
+
+    def __init__(self, cfg, env):
+        asset_cfg = cfg.params["asset_cfg"]
+        asset = env.scene[asset_cfg.name]
+        self.default_joint_pos = asset.data.default_joint_pos
+        _, joint_names = asset.find_joints(asset_cfg.joint_names)
+        keys = ("std_standing", "std_walking", "std_running", "terrain_tolerance")
+        values = [
+            resolve_matching_names_values(cfg.params[key], joint_names)[2]
+            for key in keys
+        ]
+        self.values = torch.tensor(values, device=env.device)
+        if (self.values[:3] <= 0).any() or (self.values[3] < 0).any():
+            raise ValueError("Pose std must be positive and terrain tolerances nonnegative.")
+
+    def __call__(
+        self,
+        env,
+        std_standing,
+        std_walking,
+        std_running,
+        terrain_tolerance,
+        asset_cfg,
+        command_name,
+        walking_threshold=0.1,
+        running_threshold=1.0,
+        scan_sensor_name="terrain_scan",
+        terrain_radius=0.35,
+        terrain_height_std=(0.01, 0.04),
+    ):
+        lo, hi = terrain_height_std
+        valid_thresholds = 0 <= lo < hi and 0 <= walking_threshold < running_threshold
+        if terrain_radius <= 0 or not valid_thresholds:
+            raise ValueError("Invalid terrain radius, roughness thresholds, or speed thresholds.")
+
+        asset = env.scene[asset_cfg.name]
+        command = env.command_manager.get_command(command_name)
+        speed = torch.linalg.vector_norm(command[:, :2], dim=1) + command[:, 2].abs()
+        mode = (speed >= walking_threshold).long() + (speed >= running_threshold).long()
+
+        scan = env.scene[scan_sensor_name].data
+        valid = (
+            (scan.distances >= 0)
+            & torch.isfinite(scan.distances)
+            & torch.isfinite(scan.hit_pos_w).all(dim=-1)
+            & (scan.normals_w[..., 2] > 0)
+        )
+        hits = torch.where(valid[..., None], scan.hit_pos_w, 0.0)
+        delta = hits - asset.data.root_link_pos_w[:, None, :]
+        distance_sq = delta[..., :2].square().sum(dim=-1)
+        weights = (1.0 - distance_sq / terrain_radius**2).clamp_min(0).square() * valid
+        count = weights.sum(dim=-1).clamp_min(1.0e-6)
+        relative_z = delta[..., 2]
+        mean_z = (weights * relative_z).sum(dim=-1) / count
+        roughness = (
+            (weights * (relative_z - mean_z[:, None]).square()).sum(dim=-1) / count
+        ).sqrt()
+
+        alpha = ((roughness - lo) / (hi - lo)).clamp(0, 1)
+        alpha = alpha.square() * (3.0 - 2.0 * alpha)
+        enough_scan = (weights > 0).sum(dim=-1) >= 4
+        alpha = torch.where((mode > 0) & enough_scan, alpha, 0.0)
+
+        std = self.values[mode]
+        tolerance = alpha[:, None] * self.values[3]
+        joint_ids = asset_cfg.joint_ids
+        error = asset.data.joint_pos[:, joint_ids] - self.default_joint_pos[:, joint_ids]
+        error = (error.abs() - tolerance).clamp_min(0.0)
+        return torch.exp(-torch.mean(error.square() / std.square(), dim=1))
 
 
 def _safe_tensor(value: torch.Tensor, limit: float) -> torch.Tensor:
@@ -406,6 +480,26 @@ def him_track_linear_velocity(
     xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
     z_error = torch.square(actual[:, 2])
     reward = torch.exp(-(xy_error + 2.0 * z_error) / _safe_std(std) ** 2)
+    return _safe_tensor(reward, limit=1.0)
+
+
+def ri4438_track_linear_velocity(
+    env: ManagerBasedRlEnv,
+    std: float,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Track commanded body-frame planar velocity as in the RI-4438 HIM task.
+
+    Vertical velocity is deliberately left to the separate ``lin_vel_z`` term,
+    matching the reference reward decomposition.
+    """
+    command = _safe_command(env, command_name)
+    if command is None:
+        return _zero_reward(env)
+    actual = safe_base_lin_vel(env, asset_cfg)
+    xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
+    reward = torch.exp(-xy_error / _safe_std(std) ** 2)
     return _safe_tensor(reward, limit=1.0)
 
 
@@ -1313,6 +1407,48 @@ def joint_torques_l2(
     )
 
 
+def xz1_joint_action_abs(
+    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Mean absolute raw policy action for selected XZ1 joints."""
+    action = _safe_tensor(env.action_manager.action[:, asset_cfg.joint_ids], _SAFE_STATE_LIMIT)
+    return torch.mean(torch.abs(action), dim=1)
+
+
+def xz1_joint_target_error(
+    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Mean absolute position-target tracking error for selected joints."""
+    asset: Entity = env.scene[asset_cfg.name]
+    error = asset.data.joint_pos_target[:, asset_cfg.joint_ids] - asset.data.joint_pos[:, asset_cfg.joint_ids]
+    return torch.mean(torch.abs(_safe_tensor(error, _SAFE_STATE_LIMIT)), dim=1)
+
+
+def xz1_joint_torque_ratio(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    effort_limit: float = 31.7,
+) -> torch.Tensor:
+    """Maximum absolute joint-space actuator force divided by the torque limit."""
+    asset: Entity = env.scene[asset_cfg.name]
+    torque = _safe_tensor(asset.data.qfrc_actuator[:, asset_cfg.joint_ids], _SAFE_STATE_LIMIT)
+    ratio = torch.abs(torque) / max(float(effort_limit), 1.0e-6)
+    return torch.amax(ratio, dim=1).clamp_min(0.0)
+
+
+def xz1_joint_limit_proximity(
+    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Return 0 at the center of the soft range and 1 at either soft limit."""
+    asset: Entity = env.scene[asset_cfg.name]
+    limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]
+    position = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    lower, upper = limits[..., 0], limits[..., 1]
+    span = (upper - lower).clamp_min(1.0e-6)
+    distance_ratio = torch.minimum((position - lower) / span, (upper - position) / span)
+    return (1.0 - 2.0 * distance_ratio).clamp(0.0, 1.0).amax(dim=1)
+
+
 # 关节位置限制
 def joint_pos_limits(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
@@ -1622,6 +1758,33 @@ def feet_stumble(
         .mean(dim=1),
         limit=1.0,
     )
+
+
+def feet_stumble_reference(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "feet_ground_contact",
+    horizontal_ratio: float = 1.5,
+) -> torch.Tensor:
+    """Match RI-4438's stumble event: any foot can trigger one penalty.
+
+    A stumble is a contact whose horizontal force exceeds ``ratio`` times the
+    absolute vertical force.  The reference term reduces across feet with an
+    ``any`` operation, so a single bad impact is not diluted by three quiet
+    feet.  It intentionally does not impose a vertical-force floor.
+    """
+    sensor = _get_contact_sensor(env, sensor_name)
+    if sensor is None:
+        return _zero_reward(env)
+    force = sensor.data.force
+    if force is None and sensor.data.force_history is not None:
+        force = sensor.data.force_history[..., -1, :]
+    if force is None:
+        return _zero_reward(env)
+    force = _safe_tensor(force, _SAFE_STATE_LIMIT)
+    horizontal = torch.linalg.vector_norm(force[..., :2], dim=-1)
+    vertical = torch.abs(force[..., 2])
+    stumble = horizontal > max(float(horizontal_ratio), 0.0) * vertical
+    return _safe_tensor(stumble.any(dim=1).to(torch.float32), limit=1.0)
 
 
 def collision(

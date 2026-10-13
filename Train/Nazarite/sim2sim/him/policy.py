@@ -30,7 +30,7 @@ class _HIMActor(nn.Module):
 
     def forward(self, history: torch.Tensor) -> torch.Tensor:
         frames = history.reshape(-1, HISTORY_SIZE, FRAME_DIM).clamp(-100.0, 100.0)
-        frames[:, :, 37:49] = frames[:, :, 37:49].clamp(-10.0, 10.0)
+        frames[:, :, 35:47] = frames[:, :, 35:47].clamp(-10.0, 10.0)
         history = frames.flatten(start_dim=1)
         encoded = self.encoder(history)
         latent = F.normalize(encoded[:, 3:], dim=-1, p=2.0)

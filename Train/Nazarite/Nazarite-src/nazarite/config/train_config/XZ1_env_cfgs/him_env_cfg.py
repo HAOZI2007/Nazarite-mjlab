@@ -40,80 +40,77 @@ from mjlab.viewer import ViewerConfig
 from nazarite.config.robot_config.xz1_cfg import (
     XZ1_ACTION_SCALE,
     XZ1_BASE_BODY,
-    XZ1_CALF_BODIES,
     XZ1_FOOT_GEOMS,
     XZ1_FOOT_SITES,
-    XZ1_HIP_BODIES,
-    XZ1_THIGH_BODIES,
     get_xz1_cfg,
 )
+from nazarite.mdp import curriculums as custom_curriculums
+from nazarite.mdp import events as custom_events
 from nazarite.mdp import observations as custom_observations
 from nazarite.mdp import rewards as custom_rewards
+from nazarite.mdp.commands import TerrainConditionedVelocityCommandCfg
 from nazarite.mdp.him_numerics import configure_him_observations
 
+from .him_terrain import BoxHighWallTerrainCfg, BoxTireArrayTerrainCfg
+from .terminal_observations import configure_estimator_observations
+
 # XZ1-local HIM knobs.  Keep these here instead of mutating the Go2 task.
-XZ1_HIM_NUM_ENVS = 512
-XZ1_HIM_EPISODE_LENGTH_S = 20.0
+XZ1_HIM_NUM_ENVS = 1024
+XZ1_HIM_EPISODE_LENGTH_S = 10.0
 XZ1_HIM_SELF_COLLISION_FORCE_THRESHOLD = 1.0
 XZ1_HIM_STUMBLE_HORIZONTAL_RATIO = 5.0
 XZ1_HIM_GAIT_PERIOD = 0.6
-XZ1_HIM_GAIT_OFFSETS = (0.0, 0.5, 0.5, 0.0)
+# MJCF foot order is FL, FR, RR, RL; diagonal trot pairs are FL+RR / FR+RL.
+XZ1_HIM_GAIT_OFFSETS = (0.0, 0.5, 0.0, 0.5)
 XZ1_HIM_GAIT_STANCE_FRACTION = 0.56
 XZ1_HIM_GAIT_COMMAND_THRESHOLD = 0.1
-# MuJoCo's hfield narrow-phase caps contacts generated for one geom pair at
-# 50.  XZ1's collision boxes/cylinders are larger than one 0.1 m cell, so use
-# a coarser hfield grid to keep each pair below that cap.
-XZ1_HIM_HFIELD_HORIZONTAL_SCALE = 0.20
-XZ1_HIM_HFIELD_DOWNSAMPLED_SCALE = 0.40
-
-
+XZ1_HIM_PHYSICS_DT = 0.005
+XZ1_HIM_DECIMATION = 4
+# Reference layout: five stair rings plus the central sixth level. Keep
+# XZ1's tread width and height range, with flat space around the staircase.
+XZ1_HIM_STAIR_LEVELS = 6
+XZ1_HIM_STAIR_WIDTH = 0.35
+XZ1_HIM_STAIR_PLATFORM_WIDTH = 2.5
+XZ1_HIM_STAIR_BORDER_WIDTH = (
+    8.0 - XZ1_HIM_STAIR_PLATFORM_WIDTH
+    - 2 * (XZ1_HIM_STAIR_LEVELS - 1) * XZ1_HIM_STAIR_WIDTH
+) / 2
 XZ1_HIM_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
     num_rows=8,
-    num_cols=8,
+    num_cols=3,
     border_width=25.0,
     sub_terrains={
         "stairs_up": terrain_gen.BoxPyramidStairsTerrainCfg(
-            proportion=0.25,
+            # Preserve the original 25:25:20 ratio after removing hfields.
+            proportion=0.35,
             step_height_range=(0.03, 0.12),
-            step_width=0.35,
-            platform_width=1.0,
-            border_width=0.25,
+            step_width=XZ1_HIM_STAIR_WIDTH,
+            platform_width=XZ1_HIM_STAIR_PLATFORM_WIDTH - 1e-6,
+            border_width=XZ1_HIM_STAIR_BORDER_WIDTH,
         ),
         "stairs_down": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-            proportion=0.25,
+            proportion=0.35,
             step_height_range=(0.03, 0.12),
-            step_width=0.35,
-            platform_width=1.0,
-            border_width=0.25,
+            step_width=XZ1_HIM_STAIR_WIDTH,
+            platform_width=XZ1_HIM_STAIR_PLATFORM_WIDTH - 1e-6,
+            border_width=XZ1_HIM_STAIR_BORDER_WIDTH,
         ),
-        "discrete_grid": terrain_gen.BoxRandomGridTerrainCfg(
-            proportion=0.20,
-            grid_width=0.40,
-            grid_height_range=(0.02, 0.08),
-            platform_width=1.0,
-            fill_gaps=True,
-            merge_similar_heights=True,
-            border_width=0.25,
-        ),
-        "gravel": terrain_gen.HfRandomUniformTerrainCfg(
+        "tire_array": BoxTireArrayTerrainCfg(
             proportion=0.15,
-            noise_range=(0.005, 0.035),
-            noise_step=0.005,
-            horizontal_scale=XZ1_HIM_HFIELD_HORIZONTAL_SCALE,
-            vertical_scale=0.005,
-            downsampled_scale=XZ1_HIM_HFIELD_DOWNSAMPLED_SCALE,
-            border_width=0.25,
-            scale_with_difficulty=True,
+            tire_outer_diameter=0.55,
+            tire_inner_diameter=0.33,
+            tire_width=0.165,
+            tire_pitch=0.56,
+            tire_height=0.165,
+            startup_zone_length=4.0,
+            spawn_x_fraction=0.25,
         ),
-        "waves": terrain_gen.HfWaveTerrainCfg(
+        "high_wall": BoxHighWallTerrainCfg(
             proportion=0.15,
-            amplitude_range=(0.02, 0.10),
-            num_waves=3,
-            horizontal_scale=XZ1_HIM_HFIELD_HORIZONTAL_SCALE,
-            vertical_scale=0.005,
-            border_width=0.25,
+            wall_height_range=(0.05, 0.30),
+            wall_thickness=0.08,
         ),
     },
 )
@@ -128,6 +125,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.1),
         max_distance=5.0,
         exclude_parent_body=True,
+        include_geom_groups=(0,),
     )
     feet_ground = ContactSensorCfg(
         name="feet_ground_contact",
@@ -138,20 +136,24 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         num_slots=1,
         track_air_time=True,
     )
-    nonfoot_ground = ContactSensorCfg(
-        name="nonfoot_ground_touch",
-        primary=ContactMatch(mode="body", pattern=(XZ1_BASE_BODY,), entity="robot"),
+    leg_ground = ContactSensorCfg(
+        name="leg_ground_contact",
+        primary=ContactMatch(
+            mode="geom",
+            pattern=r"^(FL|FR|RR|RL)_(hip|thigh|calf)_link_primitive_.*$",
+            entity="robot",
+        ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
         fields=("found", "force"),
         reduce="none",
         num_slots=1,
-        history_length=4,
+        history_length=1,
     )
-    leg_ground = ContactSensorCfg(
-        name="leg_ground_contact",
+    rear_thigh_ground = ContactSensorCfg(
+        name="rear_thigh_ground_contact",
         primary=ContactMatch(
             mode="body",
-            pattern=XZ1_HIP_BODIES + XZ1_THIGH_BODIES + XZ1_CALF_BODIES,
+            pattern=("RR_thigh_link", "RL_thigh_link"),
             entity="robot",
         ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
@@ -260,7 +262,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         )
     }
     commands: dict[str, CommandTermCfg] = {
-        "twist": UniformVelocityCommandCfg(
+        "twist": TerrainConditionedVelocityCommandCfg(
             entity_name="robot",
             resampling_time_range=(8.0, 12.0),
             rel_standing_envs=0.05,
@@ -268,6 +270,8 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             rel_heading_envs=0.0,
             heading_command=False,
             debug_vis=True,
+            forward_only_terrain_names=("tire_array", "high_wall"),
+            forward_only_x_min=0.3,
             ranges=UniformVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0),
                 lin_vel_y=(-1.0, 1.0),
@@ -278,7 +282,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
     }
     events = {
         "reset_base": EventTermCfg(
-            func=envs_mdp.reset_root_state_uniform,
+            func=custom_events.reset_root_state_uniform_facing_high_wall,
             mode="reset",
             params={
                 "pose_range": {
@@ -373,30 +377,21 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
     # Reward audit: each active term owns a distinct signal.  In particular,
     # body angular velocity and angular momentum use different measurements;
     # action rate and smoothness penalize first- and second-order changes;
-    # foot clearance, slip, soft landing, and stumble cover height, tangential
-    # motion, vertical impact, and horizontal impact respectively.  Terrain
-    # contact terms are split by body region, so no Go2 reward is reused here.
+    # yaw tracking follows RI-4438 and leaves roll/pitch stabilization to the
+    # dedicated body terms. Slip, soft landing, and stumble cover tangential
+    # motion, vertical impact, and horizontal impact respectively.
     rewards = {
-        "track_velocity_x": RewardTermCfg(
-            func=custom_rewards.track_velocity_x,
-            weight=0.5,
+        "track_linear_velocity": RewardTermCfg(
+            func=custom_rewards.ri4438_track_linear_velocity,
+            weight=2.0,
             params={
                 "command_name": "twist",
                 "std": math.sqrt(0.25),
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "track_velocity_y": RewardTermCfg(
-            func=custom_rewards.track_velocity_y,
-            weight=0.5,
-            params={
-                "command_name": "twist",
-                "std": math.sqrt(0.25),
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
-        "track_yaw_velocity": RewardTermCfg(
-            func=custom_rewards.him_track_angular_velocity,
+        "track_angular_velocity": RewardTermCfg(
+            func=custom_rewards.track_yaw_velocity,
             weight=1.0,
             params={
                 "command_name": "twist",
@@ -426,14 +421,14 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         ),
         "is_terminated": RewardTermCfg(func=envs_mdp.is_terminated, weight=-10.0),
         "joint_acc_l2": RewardTermCfg(func=envs_mdp.joint_acc_l2, weight=-2.5e-7),
-        "joint_pos_limits": RewardTermCfg(func=envs_mdp.joint_pos_limits, weight=-1.0),
-        "action_rate_l2": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.01),
-        "smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.01),
+        "joint_pos_limits": RewardTermCfg(func=envs_mdp.joint_pos_limits, weight=-10.0),
+        "action_rate_l2": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.015),
+        "smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.015),
         "joint_torques_l2": RewardTermCfg(
             func=envs_mdp.joint_torques_l2, weight=-2.0e-5
         ),
         "pose": RewardTermCfg(
-            func=velocity_mdp.variable_posture,
+            func=custom_rewards.terrain_variable_posture,
             weight=0.5,
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
@@ -449,22 +444,32 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
                     r".*_calf_joint": 0.35,
                 },
                 "std_running": {
-                    r".*_hip_joint": 0.15,
-                    r".*_thigh_joint": 0.35,
+                    r".*_hip_joint": 0.35,
+                    r".*_thigh_joint": 0.40,
                     r".*_calf_joint": 0.40,
                 },
                 "walking_threshold": 0.1,
                 "running_threshold": 1.0,
+                "scan_sensor_name": "terrain_scan",
+                "terrain_radius": 0.35,
+                "terrain_height_std": (0.01, 0.04),
+                "terrain_tolerance": {
+                    r".*_hip_joint": 0.05,
+                    r".*_thigh_joint": 0.15,
+                    r".*_calf_joint": 0.20,
+                },
             },
         ),
         "hip_pos": RewardTermCfg(
             func=custom_rewards.hip_joint_deviation_penalty,
-            weight=-0.1,
+            weight=-0.25,
             params={"command_name": "twist"},
         ),
         "foot_gait": RewardTermCfg(
             func=custom_rewards.feet_gait,
-            weight=0.5,
+            # Retain a trot preference but leave room for obstacle-specific
+            # asymmetric stepping and longer swing phases.
+            weight=0.15,
             params={
                 "period": XZ1_HIM_GAIT_PERIOD,
                 "offset": list(XZ1_HIM_GAIT_OFFSETS),
@@ -476,7 +481,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         ),
         "feet_air_time": RewardTermCfg(
             func=custom_rewards.him_feet_air_time,
-            weight=1.0,
+            weight=1.5,
             params={
                 "sensor_name": "feet_ground_contact",
                 "gait_name": "foot_gait",
@@ -486,15 +491,16 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         ),
         "foot_clearance": RewardTermCfg(
             func=custom_rewards.terrain_relative_feet_clearance,
-            weight=-1.0,
+            weight=-0.5,
             params={
                 "target_height": 0.08,
-                "max_height": 0.25,
+                # A 300 mm wall needs a terrain-relative target above its top.
+                "max_height": 0.40,
                 "gait_name": "foot_gait",
                 "scan_sensor_name": "terrain_scan",
                 "command_name": "twist",
                 "command_threshold": XZ1_HIM_GAIT_COMMAND_THRESHOLD,
-                "lookahead_distance": 0.25,
+                "lookahead_distance": 0.45,
                 "path_half_width": 0.10,
                 "foot_radius": 0.022,
                 "asset_cfg": SceneEntityCfg("robot", site_names=XZ1_FOOT_SITES),
@@ -502,7 +508,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         ),
         "foot_slip": RewardTermCfg(
             func=velocity_mdp.feet_slip,
-            weight=-0.5,
+            weight=-0.1,
             params={
                 "sensor_name": "feet_ground_contact",
                 "command_name": "twist",
@@ -512,7 +518,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         ),
         "soft_landing": RewardTermCfg(
             func=velocity_mdp.soft_landing,
-            weight=-1e-3,
+            weight=-2e-3,
             params={
                 "sensor_name": "feet_ground_contact",
                 "command_name": "twist",
@@ -521,21 +527,16 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         ),
         "stand_still": RewardTermCfg(
             func=custom_rewards.stand_still,
-            weight=-1.0,
+            weight=-0.5,
             params={
                 "command_name": "twist",
                 "command_threshold": 0.1,
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
             },
         ),
-        "nonfoot_ground_touch": RewardTermCfg(
-            func=velocity_mdp.illegal_contact,
-            weight=-3.0,
-            params={"sensor_name": "nonfoot_ground_touch", "force_threshold": 1.0},
-        ),
         "leg_collision": RewardTermCfg(
             func=velocity_mdp.illegal_contact,
-            weight=-2.0,
+            weight=-0.5,
             params={"sensor_name": "leg_ground_contact", "force_threshold": 1.0},
         ),
         "self_collision": RewardTermCfg(
@@ -547,7 +548,9 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             },
         ),
         "stumble": RewardTermCfg(
-            func=custom_rewards.feet_stumble,
+            # Match RI-4438: one horizontal-dominated impact from any foot is
+            # one stumble event, rather than averaging the four foot flags.
+            func=custom_rewards.feet_stumble_reference,
             weight=-0.1,
             params={
                 "sensor_name": "feet_ground_contact",
@@ -563,7 +566,33 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
     }
     curriculum = {
         "terrain_levels": CurriculumTermCfg(
-            func=velocity_mdp.terrain_levels_vel, params={"command_name": "twist"}
+            # The native distance rule can require more distance than an 8 m
+            # XZ1 tile provides at high commands.  Use the type-aware DELTA
+            # curriculum with hysteresis and a capped success distance.
+            func=custom_curriculums.terrain_levels_delta,
+            params={
+                "command_name": "twist",
+                "success_distance_scale": 0.8,
+                "min_success_distance": 0.8,
+                "max_success_distance": 3.2,
+                "success_streak_length": 2,
+                "failure_streak_length": 3,
+                "sparse_terrain_names": ("stairs_down", "tire_array", "high_wall"),
+                "sparse_success_distance_scale": 0.5,
+                "sparse_min_success_distance": 0.8,
+                "sparse_max_success_distance": 2.0,
+                "sparse_success_streak_length": 3,
+                "sparse_failure_streak_length": 4,
+                "high_wall_terrain_name": "high_wall",
+                "high_wall_crossing_clearance": 0.4,
+                "tire_array_terrain_name": "tire_array",
+                "tire_array_crossing_clearance": 0.05,
+                "adaptive_type_sampling": True,
+                "adaptive_sampling_floor": 0.25,
+                "adaptive_sampling_temperature": 1.0,
+                "adaptive_warmup_episodes": 20,
+                "type_success_ema_alpha": 0.05,
+            },
         ),
         "command_vel": CurriculumTermCfg(
             func=velocity_mdp.commands_vel,
@@ -573,13 +602,22 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
                     {
                         "step": 0,
                         "lin_vel_x": (-1.0, 1.0),
-                        "lin_vel_y": (-1.0, 1.0),
-                        "ang_vel_z": (-1.0, 1.0),
+                        "lin_vel_y": (-0.5, 0.5),
+                        "ang_vel_z": (-0.5, 0.5),
                     }
                 ],
             },
         ),
     }
+    # Actuator delay is measured in physics steps. Keep it within one 20 ms
+    # control interval (formerly max 9 x 2 ms), without mutating other XZ1 tasks.
+    robot_cfg = deepcopy(get_xz1_cfg())
+    assert robot_cfg.articulation is not None
+    for actuator in robot_cfg.articulation.actuators:
+        actuator.delay_min_lag = 0
+        actuator.delay_max_lag = XZ1_HIM_DECIMATION - 1
+        actuator.delay_update_period = XZ1_HIM_DECIMATION
+
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(
             terrain=TerrainEntityCfg(
@@ -591,11 +629,11 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
                 terrain_scan,
                 root_angmom,
                 feet_ground,
-                nonfoot_ground,
                 leg_ground,
+                rear_thigh_ground,
                 self_collision,
             ),
-            entities={"robot": get_xz1_cfg()},
+            entities={"robot": robot_cfg},
             num_envs=XZ1_HIM_NUM_ENVS,
             extent=2.0,
         ),
@@ -606,7 +644,58 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         rewards=rewards,
         terminations=terminations,
         curriculum=curriculum,
-        metrics={"mean_action_acc": MetricsTermCfg(func=envs_mdp.mean_action_acc)},
+        metrics={
+            "mean_action_acc": MetricsTermCfg(func=envs_mdp.mean_action_acc),
+            "rr_thigh_action_abs": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_action_abs,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",))},
+            ),
+            "rl_thigh_action_abs": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_action_abs,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",))},
+            ),
+            "rr_thigh_target_error": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_target_error,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",))},
+            ),
+            "rl_thigh_target_error": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_target_error,
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",))},
+            ),
+            "rr_thigh_torque_ratio": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_torque_ratio,
+                reduce="max",
+                params={
+                    "asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",)),
+                    "effort_limit": 31.7,
+                },
+            ),
+            "rl_thigh_torque_ratio": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_torque_ratio,
+                reduce="max",
+                params={
+                    "asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",)),
+                    "effort_limit": 31.7,
+                },
+            ),
+            "rr_thigh_limit_proximity": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_limit_proximity,
+                reduce="max",
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",))},
+            ),
+            "rl_thigh_limit_proximity": MetricsTermCfg(
+                func=custom_rewards.xz1_joint_limit_proximity,
+                reduce="max",
+                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",))},
+            ),
+            "rear_thigh_ground_contact": MetricsTermCfg(
+                func=velocity_mdp.illegal_contact,
+                params={
+                    "sensor_name": "rear_thigh_ground_contact",
+                    "force_threshold": 1.0,
+                },
+            ),
+        },
         viewer=ViewerConfig(
             origin_type=ViewerConfig.OriginType.ASSET_BODY,
             entity_name="robot",
@@ -616,15 +705,21 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             azimuth=90.0,
         ),
         sim=SimulationCfg(
-            nconmax=256,
-            njmax=1500,
-            contact_sensor_maxmatch=500,
-            mujoco=MujocoCfg(timestep=0.002, iterations=10, ls_iterations=20),
+            nconmax=64,
+            njmax=500,
+            contact_sensor_maxmatch=128,
+            mujoco=MujocoCfg(
+                timestep=XZ1_HIM_PHYSICS_DT,
+                solver="cg",
+                iterations=10,
+                ls_iterations=20,
+            ),
         ),
-        decimation=10,
+        decimation=XZ1_HIM_DECIMATION,
         episode_length_s=XZ1_HIM_EPISODE_LENGTH_S,
-        auto_reset=play,
+        auto_reset=True,
     )
+    configure_estimator_observations(cfg, play=play)
     if play:
         terrain_cfg = cfg.scene.terrain
         assert terrain_cfg is not None

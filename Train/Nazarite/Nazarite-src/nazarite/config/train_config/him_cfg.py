@@ -28,9 +28,9 @@ class RslRlHimActorCfg(RslRlModelCfg):
     "init_std": 1.0,
     "std_type": "scalar",
   })
-  num_one_step_obs: int = 49
+  num_one_step_obs: int = 47
   history_size: int = 6
-  history_term_dims: tuple[int, ...] = (3, 3, 3, 2, 2, 12, 12, 12)
+  history_term_dims: tuple[int, ...] = (3, 3, 3, 2, 12, 12, 12)
   history_order: str = "frame_major_oldest_first"
   estimator_cfg: dict[str, Any] = field(default_factory=lambda: {
     "enc_hidden_dims": (128, 64, 16),
@@ -42,7 +42,7 @@ class RslRlHimActorCfg(RslRlModelCfg):
   })
   observation_clip: float = 100.0
   action_clip: float = 10.0
-  action_observation_slice: tuple[int, int] = (37, 49)
+  action_observation_slice: tuple[int, int] = (35, 47)
 
 
 @dataclass
@@ -52,8 +52,8 @@ class RslRlHimAlgorithmCfg(RslRlPpoAlgorithmCfg):
   estimator_max_grad_norm: float = 10.0
   estimator_obs_groups: tuple[str, ...] = ("critic",)
   # Critic layout: actor frame excluding command, plus privileged velocity.
-  estimator_target_slices: tuple[tuple[int, int], ...] = ((0, 6), (9, 49), (49, 52))
-  estimator_velocity_slice: tuple[int, int] = (49, 52)
+  estimator_target_slices: tuple[tuple[int, int], ...] = ((0, 6), (9, 47), (47, 50))
+  estimator_velocity_slice: tuple[int, int] = (47, 50)
 
 
 @dataclass

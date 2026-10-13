@@ -25,13 +25,8 @@ class HIMObservationBuilder:
         io: MuJoCoIO,
         command: np.ndarray,
         last_action: np.ndarray,
-        behavior: np.ndarray,
     ) -> np.ndarray:
         terms = build_actor_terms(io, command, last_action)
-        behavior = np.asarray(behavior, dtype=np.float32)
-        if behavior.shape != (2,):
-            raise ValueError(f"behavior must have shape (2,), got {behavior.shape}")
-        terms["behavior"] = behavior
         phase = np.zeros(2, dtype=np.float32)
         if np.linalg.norm(command) >= 0.1:
             phase[:] = [np.sin(2.0 * np.pi * self.phase), np.cos(2.0 * np.pi * self.phase)]

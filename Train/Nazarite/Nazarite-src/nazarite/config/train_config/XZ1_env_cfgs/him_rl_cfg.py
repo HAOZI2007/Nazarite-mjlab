@@ -19,8 +19,10 @@ def xz1_him_runner_cfg(
         obs_normalization=True,
     )
     algorithm = RslRlHimAlgorithmCfg(
+        estimator_obs_groups=("estimator",),
         estimator_target_slices=((0, 6), (9, 47), (47, 50)),
         estimator_velocity_slice=(47, 50),
+        entropy_coef= 0.01,
     )
     return RslRlHimRunnerCfg(
         actor=actor,

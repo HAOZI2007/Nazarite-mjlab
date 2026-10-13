@@ -48,7 +48,6 @@ from nazarite.config.robot_config.go2_cfg import (
 from nazarite.mdp import observations as custom_observations
 from nazarite.mdp import rewards as custom_rewards
 from nazarite.mdp import terminations as custom_terminations
-from nazarite.mdp.commands import HimBehaviorCommandCfg
 from nazarite.mdp.him_numerics import configure_him_observations
 from nazarite.terrains import (
   BoxHeightLimitFrameTerrainCfg,
@@ -135,7 +134,6 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "base_ang_vel": ObservationTermCfg(func=envs_mdp.builtin_sensor, params={"sensor_name": "robot/imu_ang_vel"}, noise=Unoise(n_min=-0.2, n_max=0.2)),
     "projected_gravity": ObservationTermCfg(func=envs_mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)),
     "command": ObservationTermCfg(func=envs_mdp.generated_commands, params={"command_name": "twist"}),
-    "behavior": ObservationTermCfg(func=custom_observations.him_behavior_parameters, params={"command_name": "behavior"}),
     "phase": ObservationTermCfg(func=custom_observations.phase, params={"period": 0.6, "command_name": "twist"}),
     "joint_pos": ObservationTermCfg(func=envs_mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)),
     "joint_vel": ObservationTermCfg(func=envs_mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5)),
@@ -179,14 +177,6 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
       rel_forward_envs=0.1, rel_heading_envs=0.0, heading_command=False, debug_vis=True,
       ranges=UniformVelocityCommandCfg.Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=None),
     ),
-    "behavior": HimBehaviorCommandCfg(
-      entity_name="robot",
-      resampling_time_range=(10.0, 20.0),
-      body_height_range=(-0.10, 0.025),
-      stance_width_range=(0.18, 0.29),
-      freeze_when_standing=True,
-      debug_vis=False,
-    ),
   }
   events = {
     "reset_base": EventTermCfg(func=envs_mdp.reset_root_state_uniform, mode="reset", params={"pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (0.01, 0.05), "yaw": (-3.14, 3.14)}, "velocity_range": {}}),
@@ -200,14 +190,8 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "pseudo_inertia": EventTermCfg(func=dr.pseudo_inertia, mode="startup", params={"asset_cfg": SceneEntityCfg("robot"), "alpha_range": (0.5 * math.log(HIM_LINK_MASS_RANGE[0]), 0.5 * math.log(HIM_LINK_MASS_RANGE[1])), "distribution": "uniform"}),
   }
   rewards = {
-    # Track each commanded axis independently.  This is the same composition
-    # used by the WTW/DELTA tasks: lateral or yaw error cannot be hidden by a
-    # good forward-velocity score, which gives straighter commanded walking.
-    "track_velocity_x": RewardTermCfg(func=custom_rewards.track_velocity_x, weight=0.5, params={"command_name": "twist", "std": math.sqrt(0.25), "asset_cfg": SceneEntityCfg("robot")}),
-    "track_velocity_y": RewardTermCfg(func=custom_rewards.track_velocity_y, weight=0.5, params={"command_name": "twist", "std": math.sqrt(0.25), "asset_cfg": SceneEntityCfg("robot")}),
-    "track_yaw_velocity": RewardTermCfg(func=custom_rewards.track_yaw_velocity, weight=1.0, params={"command_name": "twist", "std": math.sqrt(0.5), "asset_cfg": SceneEntityCfg("robot")}),
-    # Keep vertical velocity regularization separate from horizontal tracking.
-    "lin_vel_z": RewardTermCfg(func=custom_rewards.lin_vel_z_l2, weight=-0.5, params={"asset_cfg": SceneEntityCfg("robot")}),
+    "track_linear_velocity": RewardTermCfg(func=custom_rewards.him_track_linear_velocity, weight=1.0, params={"command_name": "twist", "std": math.sqrt(0.25), "asset_cfg": SceneEntityCfg("robot")}),
+    "track_angular_velocity": RewardTermCfg(func=custom_rewards.him_track_angular_velocity, weight=1.0, params={"command_name": "twist", "std": math.sqrt(0.5), "asset_cfg": SceneEntityCfg("robot")}),
     "body_orientation_l2": RewardTermCfg(func=custom_rewards.body_orientation_l2, weight=-0.2, params={"asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,))}),
     "pose": RewardTermCfg(func=velocity_mdp.variable_posture, weight=0.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*"), "command_name": "twist", "std_standing": {}, "std_walking": {}, "std_running": {}, "walking_threshold": 0.1, "running_threshold": 1.5}),
     "body_ang_vel": RewardTermCfg(func=velocity_mdp.body_angular_velocity_penalty, weight=-0.05, params={"asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,))}),
@@ -219,17 +203,12 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
     "smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.01),
     "joint_torques_l2": RewardTermCfg(func=envs_mdp.joint_torques_l2, weight=-2.0e-5),
     "hip_pos": RewardTermCfg(func=custom_rewards.hip_joint_deviation_penalty, weight=-0.1, params={"command_name": "twist"}),
-    "foot_gait": RewardTermCfg(func=custom_rewards.feet_gait, weight=0.5, params={"period": 0.6, "offset": [0.0, 0.5, 0.5, 0.0], "threshold": 0.56, "command_threshold": 0.1, "command_name": "twist", "sensor_name": "feet_ground_contact"}),
+    "foot_gait": RewardTermCfg(func=custom_rewards.feet_gait, weight=0.01, params={"period": 0.6, "offset": [0.0, 0.5, 0.5, 0.0], "threshold": 0.56, "command_threshold": 0.1, "command_name": "twist", "sensor_name": "feet_ground_contact"}),
     "foot_clearance": RewardTermCfg(func=velocity_mdp.feet_clearance, weight=-0.01, params={"target_height": 0.08, "height_sensor_name": "feet_terrain_height", "command_name": "twist", "command_threshold": 0.1, "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES)}),
     "foot_slip": RewardTermCfg(func=velocity_mdp.feet_slip, weight=-0.05, params={"sensor_name": "feet_ground_contact", "command_name": "twist", "command_threshold": 0.1, "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES)}),
     "soft_landing": RewardTermCfg(func=velocity_mdp.soft_landing, weight=-1e-3, params={"sensor_name": "feet_ground_contact", "command_name": "twist", "command_threshold": 0.1}),
     "stand_still": RewardTermCfg(func=custom_rewards.stand_still, weight=-1.0, params={"command_name": "twist", "command_threshold": 0.1, "asset_cfg": SceneEntityCfg("robot", joint_names=".*")}),
-    # Only the two requested morphology conditions are trained.  No WTW gait,
-    # frequency, phase, pitch, or swing-height reward is active in HIM.
-    "him_body_height": RewardTermCfg(func=custom_rewards.him_body_height, weight=20.0, params={"command_name": "behavior", "asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,)), "base_height_target": 0.32, "terrain_sensor_name": "terrain_scan"}),
-    "him_stance_width": RewardTermCfg(func=custom_rewards.him_stance_width, weight=0.50, params={"command_name": "behavior", "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES), "std": 0.035}),
-    "nonfoot_ground_touch": RewardTermCfg(func=velocity_mdp.illegal_contact, weight=-3.0, params={"sensor_name": "nonfoot_ground_touch", "force_threshold": 1.0}),
-    "leg_collision": RewardTermCfg(func=velocity_mdp.illegal_contact, weight=-2.0, params={"sensor_name": "leg_ground_contact", "force_threshold": 1.0}),
+    "leg_collision": RewardTermCfg(func=velocity_mdp.illegal_contact, weight=-1.0, params={"sensor_name": "leg_ground_contact", "force_threshold": 1.0}),
   }
   terminations = {
     "time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True),
@@ -241,7 +220,6 @@ def Nazarite_HIM_Complex_Terrain_Go2(play: bool = False) -> ManagerBasedRlEnvCfg
         "bridge_width": 0.30,
         "bridge_height": 0.10,
         "base_height_target": 0.32,
-        "behavior_command_name": "behavior",
         "drop_margin": 0.10,
         "asset_cfg": SceneEntityCfg("robot"),
       },

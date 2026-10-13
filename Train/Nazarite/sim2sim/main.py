@@ -81,8 +81,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vx", type=float, default=0.0)
     parser.add_argument("--vy", type=float, default=0.0)
     parser.add_argument("--yaw", type=float, default=0.0)
-    parser.add_argument("--body-height", type=float, default=0.0, help="HIM body-height offset from 0.32 m (m)")
-    parser.add_argument("--stance-width", type=float, default=0.235, help="HIM stance-width condition (m)")
     parser.add_argument("--gamepad", action="store_true", help="control velocity using a Linux gamepad")
     parser.add_argument("--list-gamepads", action="store_true", help="list detected gamepads and exit")
     parser.add_argument("--gamepad-device", type=str, default=None, help="evdev path, for example /dev/input/event21")
@@ -209,7 +207,6 @@ def main() -> None:
 
     policy_path = args.policy or default_policy_path(args.mode)
     command = np.array([args.vx, args.vy, args.yaw], dtype=np.float32)
-    behavior = np.array([args.body_height, args.stance_width], dtype=np.float32)
     gamepad: GamepadController | None = None
     if args.gamepad:
         gamepad = GamepadController(
@@ -407,7 +404,7 @@ def main() -> None:
                     if him_policy is None:
                         raise RuntimeError("HIM mode requires a policy")
                     command = np.clip(command, -1.0, 1.0)
-                    obs = him_builder.build(io, command, him_policy.last_action, behavior)
+                    obs = him_builder.build(io, command, him_policy.last_action)
                     raw_action = him_policy.step(obs)
                 elif wtw_builder is not None:
                     command = wtw_command(command)

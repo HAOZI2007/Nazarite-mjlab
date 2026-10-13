@@ -1,5 +1,7 @@
 """Nazarite curriculum hooks."""
 
+import math
+
 import torch
 
 from mjlab.entity import Entity
@@ -78,6 +80,10 @@ def terrain_levels_delta(
     sparse_success_streak_length: int = 3,
     sparse_failure_streak_length: int = 4,
     sparse_max_level: int | None = None,
+    high_wall_terrain_name: str = "high_wall",
+    high_wall_crossing_clearance: float = 0.4,
+    tire_array_terrain_name: str = "tire_array",
+    tire_array_crossing_clearance: float = 0.05,
     adaptive_type_sampling: bool = False,
     adaptive_sampling_floor: float = 0.25,
     adaptive_sampling_temperature: float = 1.0,
@@ -162,6 +168,69 @@ def terrain_levels_delta(
     active = command_speed > 0.1
     terminated = env.reset_terminated[env_ids]
     success = active & ~terminated & (distance >= target)
+    if high_wall_terrain_name in terrain_names:
+        if high_wall_crossing_clearance < 0.0:
+            raise ValueError("high_wall_crossing_clearance must be non-negative.")
+        high_wall_index = terrain_names.index(high_wall_terrain_name)
+        high_wall = terrain.terrain_types[env_ids] == high_wall_index
+        high_wall_cfg = generator.sub_terrains[high_wall_terrain_name]
+        tile_length = float(generator.size[0])
+        wall_thickness = float(getattr(high_wall_cfg, "wall_thickness", 0.0))
+        spawn_x_fraction = float(getattr(high_wall_cfg, "spawn_x_fraction", 0.25))
+        # The terrain origin is the spawn reference. The wall is centered at
+        # half the patch length, so success requires the root/body center to
+        # pass its far face plus a clear margin—not merely walk a fixed 2 m.
+        wall_far_face_from_spawn = (
+            tile_length * (0.5 - spawn_x_fraction) + wall_thickness / 2.0
+        )
+        crossing_threshold = wall_far_face_from_spawn + high_wall_crossing_clearance
+        root_x_from_spawn = (
+            asset.data.root_link_pos_w[env_ids, 0]
+            - env.scene.env_origins[env_ids, 0]
+        )
+        crossed_wall = root_x_from_spawn >= crossing_threshold
+        success = torch.where(
+            high_wall,
+            active & ~terminated & crossed_wall,
+            success,
+        )
+    if tire_array_terrain_name in terrain_names:
+        if tire_array_crossing_clearance < 0.0:
+            raise ValueError("tire_array_crossing_clearance must be non-negative.")
+        tire_index = terrain_names.index(tire_array_terrain_name)
+        tire_array = terrain.terrain_types[env_ids] == tire_index
+        tire_cfg = generator.sub_terrains[tire_array_terrain_name]
+        tile_length = float(generator.size[0])
+        tire_radius = float(getattr(tire_cfg, "tire_outer_diameter", 0.55)) / 2.0
+        pitch = float(getattr(tire_cfg, "tire_pitch", 0.56))
+        startup_length = float(
+            getattr(tire_cfg, "startup_zone_length", tile_length * 0.5)
+        )
+        spawn_x_fraction = float(getattr(tire_cfg, "spawn_x_fraction", 0.25))
+        if pitch <= 0.0:
+            raise ValueError("tire_array tire_pitch must be positive.")
+        center_min = startup_length + tire_radius
+        center_max = tile_length - tire_radius
+        tire_columns = max(1, math.floor((center_max - center_min) / pitch) + 1)
+        # Match the centered lattice used by BoxTireArrayTerrainCfg and require
+        # the body center to clear the last row, not merely reach the first tire.
+        last_tire_center = (center_min + center_max) / 2.0 + (
+            (tire_columns - 1) / 2.0
+        ) * pitch
+        tire_far_edge_from_spawn = (
+            last_tire_center + tire_radius - tile_length * spawn_x_fraction
+        )
+        crossing_threshold = tire_far_edge_from_spawn + tire_array_crossing_clearance
+        root_x_from_spawn = (
+            asset.data.root_link_pos_w[env_ids, 0]
+            - env.scene.env_origins[env_ids, 0]
+        )
+        crossed_tire_array = root_x_from_spawn >= crossing_threshold
+        success = torch.where(
+            tire_array,
+            active & ~terminated & crossed_tire_array,
+            success,
+        )
     failure = active & ~success
     old_types = terrain.terrain_types[env_ids].clone()
 

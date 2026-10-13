@@ -16,7 +16,7 @@ def fell_from_single_bridge(
     bridge_width: float = 0.30,
     bridge_height: float = 0.10,
     base_height_target: float = 0.32,
-    behavior_command_name: str = "behavior",
+    behavior_command_name: str | None = None,
     drop_margin: float = 0.10,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
@@ -39,8 +39,18 @@ def fell_from_single_bridge(
     in_bridge_x = (local_pos[:, 0] - bridge_center_x).abs() <= bridge_length * 0.5
     outside_bridge_sides = local_pos[:, 1].abs() > bridge_width * 0.5 + 0.05
 
-    behavior = env.command_manager.get_command(behavior_command_name)
-    height_offset = behavior[:, 0] if behavior.ndim == 2 and behavior.shape[1] else 0.0
+    if behavior_command_name is None:
+        height_offset = 0.0
+    else:
+        try:
+            behavior = env.command_manager.get_command(behavior_command_name)
+        except (KeyError, AttributeError):
+            behavior = None
+        height_offset = (
+            behavior[:, 0]
+            if behavior is not None and behavior.ndim == 2 and behavior.shape[1]
+            else 0.0
+        )
     minimum_root_height = bridge_height + base_height_target + height_offset - drop_margin
     root_height = asset.data.root_link_pos_w[:, 2] - origins[:, 2]
     fell_height = root_height < minimum_root_height

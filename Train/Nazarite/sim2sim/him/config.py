@@ -2,12 +2,12 @@
 
 from ..config import ACTION_SCALE, ROOT
 
-POLICY = ROOT / "logs" / "rsl_rl" / "go2_him" / "2026-09-30_22-45-59" / "policy.onnx"
-OBS_DIM = 49 * 6
-FRAME_DIM = 49
+POLICY = ROOT / "logs" / "rsl_rl" / "go2_him" / "2026-09-29_19-00-44" / "policy.onnx"
+OBS_DIM = 47 * 6
+FRAME_DIM = 47
 HISTORY_SIZE = 6
 OBSERVATION_NAMES = [
-    "base_ang_vel", "projected_gravity", "command", "behavior", "phase",
+    "base_ang_vel", "projected_gravity", "command", "phase",
     "joint_pos", "joint_vel", "actions",
 ]
 PHASE_PERIOD = 0.6

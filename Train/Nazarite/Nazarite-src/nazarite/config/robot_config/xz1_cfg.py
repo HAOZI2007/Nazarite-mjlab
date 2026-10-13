@@ -26,43 +26,44 @@ XZ1_CALF_JOINT_PATTERNS = (r".*_calf_joint",)
 XZ1_FOOT_GEOMS = (
     "FL_foot_link_primitive_1",
     "FR_foot_link_primitive_1",
-    "RL_foot_link_primitive_1",
     "RR_foot_link_primitive_1",
+    "RL_foot_link_primitive_1",
 )
 XZ1_FOOT_BODIES = (
     "FL_foot_link",
     "FR_foot_link",
-    "RL_foot_link",
     "RR_foot_link",
+    "RL_foot_link",
 )
 XZ1_HIP_BODIES = (
     "FL_hip_link",
     "FR_hip_link",
-    "RL_hip_link",
     "RR_hip_link",
+    "RL_hip_link",
 )
 XZ1_THIGH_BODIES = (
     "FL_thigh_link",
     "FR_thigh_link",
-    "RL_thigh_link",
     "RR_thigh_link",
+    "RL_thigh_link",
 )
 XZ1_CALF_BODIES = (
     "FL_calf_link",
     "FR_calf_link",
-    "RL_calf_link",
     "RR_calf_link",
+    "RL_calf_link",
 )
 XZ1_BASE_BODY = "base_link"
 
-XZ1_FOOT_SITES = ("FL", "FR", "RL", "RR")
+# Keep sensor/site columns aligned with the MJCF traversal order: FL, FR, RR, RL.
+XZ1_FOOT_SITES = ("FL", "FR", "RR", "RL")
 
 # Output-side actuator limit used by the Go2-style position actuator.
 XZ1_MOTOR_TORQUE_LIMIT = 31.7
-XZ1_HIP_THIGH_STIFFNESS = 35.0
-XZ1_HIP_THIGH_DAMPING = 1.2
-XZ1_CALF_STIFFNESS = 30.0
-XZ1_CALF_DAMPING = 1.0
+XZ1_HIP_THIGH_STIFFNESS = 32.0
+XZ1_HIP_THIGH_DAMPING = 1.4
+XZ1_CALF_STIFFNESS = 35.0
+XZ1_CALF_DAMPING = 1.8
 
 
 def get_spec() -> mujoco.MjSpec:
