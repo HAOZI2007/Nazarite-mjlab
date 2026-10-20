@@ -252,6 +252,23 @@ def test_no_terrain_geometry_reaches_into_the_track_void(
     assert span[1] <= high + 1e-6, (terrain_name, difficulty, index, span)
 
 
+def test_the_practice_pad_keeps_its_full_tile_width():
+  """The pad has no obstacle to bypass, and omni commands drive the robot sideways."""
+  generator_cfg = deepcopy(WMP_FLAT_TERRAINS_CFG)
+  subterrain = generator_cfg.sub_terrains["flat"]
+  subterrain.size = generator_cfg.size
+  spec = mujoco.MjSpec()
+  spec.worldbody.add_body(name="terrain")
+  subterrain.function(0.0, spec, np.random.default_rng(0))
+
+  model = spec.compile()
+  assert model.ngeom == 1
+  deck = model.geom_pos[0]
+  size = model.geom_size[0]
+  assert deck[1] - size[1] == pytest.approx(0.0)
+  assert deck[1] + size[1] == pytest.approx(generator_cfg.size[1])
+
+
 def test_the_void_keeps_nine_terrain_columns():
   generator_cfg = deepcopy(WMP_TERRAINS_CFG)
   assert len(generator_cfg.sub_terrains) == 9

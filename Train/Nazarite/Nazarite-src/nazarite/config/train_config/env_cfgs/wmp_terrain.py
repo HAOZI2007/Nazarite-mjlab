@@ -841,9 +841,18 @@ class WmpFlatTerrainCfg(SubTerrainCfg):
     ) -> TerrainOutput:
         del difficulty, rng
         body = spec.body("terrain")
-        return TerrainOutput(
-            origin=_origin(self.size), geometries=[_floor(body, self.size)]
+        # The pad keeps its full tile width on purpose. It carries no obstacle, so
+        # there is no bypass to close, while the omni and standing commands do
+        # drive the robot sideways: a void here would only teach it to fall off
+        # the deck it practises on. Neighbouring obstacle tracks are still
+        # isolated from it because their own decks are inset.
+        deck = _box(
+            body,
+            (self.size[0] / 2, self.size[1] / 2, 0.5),
+            (self.size[0] / 2, self.size[1] / 2, -0.5),
+            _FLOOR,
         )
+        return TerrainOutput(origin=_origin(self.size), geometries=[deck])
 
 
 WMP_TERRAINS_CFG = TerrainGeneratorCfg(
