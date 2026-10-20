@@ -431,11 +431,11 @@ def test_feet_edge_curriculum_matches_reference_ramp():
   assert feet_edge_curriculum_scale(12000) == 1.0
 
 
-def test_wmp_actor_input_is_98_dimensions_and_keeps_him_estimator():
+def test_wmp_actor_input_is_96_dimensions_and_keeps_him_estimator():
   batch = 3
   obs = TensorDict(
     {
-      "actor": torch.zeros(batch, 6, 47),
+      "actor": torch.zeros(batch, 6, 45),
       "world_model_feature": torch.zeros(batch, 512),
     },
     batch_size=[batch],
@@ -446,9 +446,11 @@ def test_wmp_actor_input_is_98_dimensions_and_keeps_him_estimator():
     "actor",
     12,
     hidden_dims=(64, 32),
-    num_one_step_obs=47,
+    # 45, not 47: the gait clock is gone (issue #3). Mirrored from the shipped
+    # config so this fixture cannot drift away from what actually trains.
+    num_one_step_obs=45,
     history_size=6,
-    history_term_dims=(3, 3, 3, 2, 12, 12, 12),
+    history_term_dims=(3, 3, 3, 12, 12, 12),
     history_order="frame_major_oldest_first",
     estimator_cfg={
       "enc_hidden_dims": (32, 16),
@@ -464,7 +466,8 @@ def test_wmp_actor_input_is_98_dimensions_and_keeps_him_estimator():
 
   latent = model.get_latent(obs)
   actions = model(obs, stochastic_output=True)
-  assert latent.shape == (batch, 98)
+  # 45 one-step + 3 estimated base velocity + 16 HIM latent + 32 visual latent.
+  assert latent.shape == (batch, 96)
   assert model.estimator.num_latent == 16
   assert actions.shape == (batch, 12)
 

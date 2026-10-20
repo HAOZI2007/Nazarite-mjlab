@@ -127,7 +127,7 @@ class MotionDataset:
         weights = torch.tensor([clip.weight for clip in clips], dtype=torch.float32)
         if float(weights.sum()) <= 0.0:
             raise ValueError("motion clip weights must sum to a positive value")
-        self._cumulative = torch.cumsum(weights / weights.sum(), dim=0)
+        self._cumulative = torch.cumsum(weights.to(self.device) / weights.sum(), dim=0)
 
     @property
     def num_frames(self) -> int:
@@ -183,8 +183,9 @@ class AMPStateNormalizer:
     def update(self, states: torch.Tensor) -> None:
         """Fold a batch of raw states into the running statistics."""
         if states.ndim != 2 or states.shape[1] != self.mean.shape[0]:
+            width = self.mean.shape[0]
             raise ValueError(
-                f"expected [batch, {self.mean.shape[0]}] states, got {tuple(states.shape)}"
+                f"expected [batch, {width}] states, got {tuple(states.shape)}"
             )
         states = states.detach().to(self.mean.device)
         batch_count = float(states.shape[0])

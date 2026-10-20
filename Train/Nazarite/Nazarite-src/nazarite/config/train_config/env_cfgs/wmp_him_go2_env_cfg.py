@@ -51,17 +51,6 @@ WMP_FEATURE_DIM = 512
 WMP_DEPTH_CAMERA_NAME = "wmp_depth_camera"
 WMP_TRACKING_CLIP_TERRAINS = ("gap", "high_wall", "single_beam")
 WMP_FEET_EDGE_TERRAINS = ("gap", "high_wall", "plum_blossom", "single_beam")
-# Tiles where the foot has to leave the ground by more than a walking swing:
-# everything except the solid ramp.
-WMP_OBSTACLE_TERRAINS = (
-    "stairs",
-    "low_frame",
-    "high_wall",
-    "plum_blossom",
-    "gap",
-    "tire_array",
-    "single_beam",
-)
 WMP_CHEAT_TERRAINS = (
     "low_frame",
     "high_wall",
@@ -70,9 +59,6 @@ WMP_CHEAT_TERRAINS = (
     "tire_array",
     "single_beam",
 )
-# Tiles where crossing requires a non-diagonal leg pattern, so the trot
-# constraint is softened there instead of being switched off.
-WMP_SOFT_GAIT_TERRAINS = ("gap", "plum_blossom", "low_frame", "single_beam")
 # Tiles with a ceiling low enough that crouching is mandatory: the beam of the
 # low frame sits at 0.42-0.60 m while the standing Go2 is about 0.44 m tall.
 WMP_LOW_CEILING_TERRAINS = ("low_frame",)

@@ -15,6 +15,7 @@ import torch
 from nazarite.config.train_config.env_cfgs.wmp_him_go2_env_cfg import (
   Nazarite_WMP_HIM_Complex_Terrain_Go2,
 )
+from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
 
 from mjlab.envs import ManagerBasedRlEnv
 
@@ -69,8 +70,6 @@ def test_stage_steps_and_every_term_evaluates(flat: bool) -> None:
     # Tie the runner's HIM constants to the widths the environment actually
     # reports. A stale 47 in any of them is the failure mode this guards: it
     # only surfaces on the first PPO update, long after the environment builds.
-    from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
-
     runner_cfg = go2_wmp_him_runner_cfg()
     one_step = dims["actor"][1]
     estimator_width = dims["estimator"][0]
