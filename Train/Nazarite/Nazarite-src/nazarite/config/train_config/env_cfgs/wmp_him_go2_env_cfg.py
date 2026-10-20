@@ -504,10 +504,11 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         ),
         "feet_air_time": RewardTermCfg(
             func=wmp_rewards.feet_air_time,
-            # The reference's plain 0.5 s threshold, single-sided. With the gait
-            # period at 0.6 s this pays only for a real leap (>0.5 s of air),
-            # which is what a trench crossing needs; swing timing is the
-            # discriminator's business now.
+            # The reference's term verbatim: 0.5 s threshold, two-sided, so a
+            # normal 0.26 s swing is charged 0.24 per contact. Clamping this to
+            # zero (the 2026-10-20 run) left swing timing to the discriminator
+            # alone, and the discriminator had 1% of the objective, so nothing
+            # shaped the gait at all.
             weight=0.5,
             params={
                 "sensor_name": "feet_ground_contact",

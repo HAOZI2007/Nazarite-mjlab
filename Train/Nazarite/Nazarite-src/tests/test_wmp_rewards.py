@@ -95,15 +95,26 @@ def make_env(
     return env, asset, sensor
 
 
-def test_feet_air_time_is_one_sided() -> None:
-    """Air time below the threshold pays nothing instead of going negative."""
+def test_feet_air_time_charges_short_swings_by_default() -> None:
+    """Two-sided, as in the reference: a short swing is a cost, not a zero."""
     env, _, sensor = make_env(command=FORWARD_CMD.clone())
     sensor.data.last_air_time = torch.tensor([[0.10, 0.30, 0.60, 0.25]] * N_ENVS)
     sensor.first_contact = torch.ones(N_ENVS, 4, dtype=torch.bool)
 
     reward = wmp_rewards.feet_air_time(env, threshold=0.25)
 
-    # (0.30 - 0.25) + (0.60 - 0.25) = 0.40; 0.10 and 0.25 both pay zero.
+    # (0.10-0.25) + (0.30-0.25) + (0.60-0.25) + (0.25-0.25) = 0.40 - 0.15 = 0.25
+    assert torch.allclose(reward, torch.full((N_ENVS,), 0.25))
+
+
+def test_feet_air_time_one_sided_mode_pays_only_excess() -> None:
+    """``signed=False`` keeps the leap-bonus form: short swings pay nothing."""
+    env, _, sensor = make_env(command=FORWARD_CMD.clone())
+    sensor.data.last_air_time = torch.tensor([[0.10, 0.30, 0.60, 0.25]] * N_ENVS)
+    sensor.first_contact = torch.ones(N_ENVS, 4, dtype=torch.bool)
+
+    reward = wmp_rewards.feet_air_time(env, threshold=0.25, signed=False)
+
     assert torch.allclose(reward, torch.full((N_ENVS,), 0.40))
 
 
@@ -116,11 +127,13 @@ def test_feet_air_time_scales_on_obstacle_terrains() -> None:
     reward = wmp_rewards.feet_air_time(
         env,
         threshold=0.25,
+        signed=False,
         obstacle_terrain_names=("gap", "high_wall"),
         obstacle_scale=2.0,
     )
 
-    # terrain_types = (gap, stairs, ramp, high_wall) -> scales (2, 1, 1, 2).
+    # terrain_types = (gap, stairs, ramp, high_wall) -> scales (2, 1, 1, 2),
+    # applied to the one-sided 0.40 of the swing excess.
     assert torch.allclose(reward, torch.tensor([0.8, 0.4, 0.4, 0.8]))
 
 

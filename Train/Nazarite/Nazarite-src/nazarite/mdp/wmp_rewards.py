@@ -113,17 +113,24 @@ def feet_air_time(
     command_threshold: float = 0.1,
     obstacle_terrain_names: tuple[str, ...] = (),
     obstacle_scale: float = 1.0,
+    signed: bool = True,
 ) -> torch.Tensor:
-    """Reward completed swing time only on foot landing events.
+    """Pay completed swing time on foot landing events.
 
-    The term is deliberately one-sided: a swing shorter than ``threshold`` pays
-    nothing, a longer swing pays its excess. The previous form paid the excess
-    even when it was negative, so every ordinary trot step (air time ~0.2 s
-    against a 0.5 s threshold) cost ``-0.3`` per stance and the aggregate
-    ``feet_air_time`` reward of the 2026-10-17 run was -0.019 per step. That is
-    a standing order to keep the feet low, which is exactly the opposite of what
-    a course with 0.55 m trenches needs. ``obstacle_terrain_names``/``obstacle_scale``
-    let the same term pay more on the tiles where a long swing is the goal.
+    ``signed=True`` reproduces the reference term: a swing shorter than
+    ``threshold`` is charged its shortfall, a longer one pays its excess. The
+    reference's 0.5 s threshold against a 0.6 s gait period is not reachable by a
+    trot, so this term is what pulls the policy towards long, bounding swings
+    instead of the front-leg skitter of the 2026-10-17 runs.
+
+    ``signed=False`` keeps the one-sided form: nothing is paid until a swing
+    exceeds ``threshold``, and short swings are free. That variant is for callers
+    who want a leap bonus on top of a gait shaped elsewhere; against a 0.5 s
+    threshold it is a no-op for every ordinary step, which is exactly what
+    happened to the 2026-10-20 S1 run.
+
+    ``obstacle_terrain_names``/``obstacle_scale`` let the same term pay more on
+    the tiles where a long swing is the goal.
     """
     try:
         sensor = env.scene[sensor_name]
@@ -133,7 +140,9 @@ def feet_air_time(
     if last_air_time is None:
         return torch.zeros(env.num_envs, device=env.device)
     first_contact = sensor.compute_first_contact(dt=env.step_dt)
-    excess = (last_air_time - threshold).clamp_min(0.0)
+    excess = last_air_time - threshold
+    if not signed:
+        excess = excess.clamp_min(0.0)
     reward = (excess * first_contact.float()).sum(dim=1)
     command = env.command_manager.get_command(command_name)
     active = torch.linalg.vector_norm(command[:, :2], dim=1) > command_threshold

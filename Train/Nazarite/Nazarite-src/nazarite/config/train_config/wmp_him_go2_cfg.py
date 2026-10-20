@@ -89,10 +89,11 @@ class RslRlWMPHIMRunnerCfg(RslRlHimRunnerCfg):
             "enabled": True,
             "motion_dir": None,
             "hidden_dims": (1024, 512),
-            # 0.15 x clamp(1 - (d-1)^2 / 4, 0). The reference uses 0.01, but it
-            # also keeps ~1.0 of task reward per step at its own dt; ours is
-            # dt-scaled and much smaller per step, so 0.01 would be invisible.
-            "style_coefficient": 0.15,
+            # coefficient x clamp(1 - (d-1)^2 / 4, 0), added *without* a dt
+            # factor, exactly like the reference. Our tracking term is ~0.028 per
+            # step and the reference's is ~0.030 with a coefficient of 0.01, so
+            # 0.02 buys twice the reference's share (~70% of tracking at d = 1).
+            "style_coefficient": 0.02,
             # 256 = 128 reference + 128 policy transitions per discriminator step,
             # matching the reference's 1:1 mix.
             "batch_size": 256,

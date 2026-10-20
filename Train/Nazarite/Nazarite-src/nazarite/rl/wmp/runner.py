@@ -95,6 +95,8 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                 seed=amp_values.get("seed"),
             )
         self._amp_prev: torch.Tensor | None = None
+        self._amp_style_sum = 0.0
+        self._amp_style_steps = 0
         self._amp_pairs: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
     def _new_replay(self) -> WorldModelReplay:
@@ -364,10 +366,6 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         if self.is_distributed:
             self.alg.broadcast_parameters()
         self.logger.init_logging_writer()
-        # The vectorised wrapper does not forward ``step_dt``; the underlying
-        # environment is the only place it lives. Every reward weight is scaled by
-        # it (scale_rewards_by_dt), so the style reward must use the same number.
-        step_dt = float(self.env.unwrapped.step_dt)
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
 
@@ -385,13 +383,17 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                     dones = dones.to(self.device)
                     if self.amp is not None:
                         amp_now = next_obs["amp"].to(self.device)
-                        # The style reward is added to the task reward, not
-                        # blended into it: the reference does the same, and the
-                        # discriminator is already scaled to reward-weight units.
-                        rewards = (
-                            rewards
-                            + self.amp.style_reward(self._amp_prev, amp_now) * step_dt
-                        )
+                        # Deliberately *not* scaled by ``step_dt``. The reward
+                        # manager folds dt into every task term, and the
+                        # reference AMP adds its style reward on top of that
+                        # result: 0.01 of style therefore competes with ~0.03 of
+                        # tracking, a third of the objective. Scaling it by dt
+                        # as well divides it by 50 and leaves it at one percent,
+                        # where the policy simply ignores it (2026-10-20 run).
+                        style = self.amp.style_reward(self._amp_prev, amp_now)
+                        rewards = rewards + style
+                        self._amp_style_sum += float(style.mean())
+                        self._amp_style_steps += 1
                         # A reset teleports the robot, so a pair that straddles one
                         # is not a transition and must not train the discriminator.
                         self._amp_pairs.append(
@@ -422,6 +424,14 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             start = time.time()
             loss_dict = self.alg.update()
             loss_dict.update(self._update_amp())
+            if self.amp is not None and self._amp_style_steps:
+                # The style reward bypasses the reward manager, so without this
+                # line nothing in the logs says how much of the return it is.
+                loss_dict["amp/style_reward"] = (
+                    self._amp_style_sum / self._amp_style_steps
+                )
+                self._amp_style_sum = 0.0
+                self._amp_style_steps = 0
             if self.replay.total_frames >= self._wm_runtime_cfg["train_start_frames"]:
                 loss_dict.update(self._update_world_model())
                 if not self._wm_pretrained:
