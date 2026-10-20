@@ -209,6 +209,12 @@ class AMPStateNormalizer:
         return {"mean": self.mean.clone(), "var": self.var.clone(), "count": self.count}
 
     def load_state_dict(self, state: dict[str, torch.Tensor | float]) -> None:
-        self.mean = state["mean"].to(self.mean.device).clone()
-        self.var = state["var"].to(self.mean.device).clone()
+        # as_tensor accepts either a tensor or a plain float, so a checkpoint
+        # round-tripped through JSON by another tool still loads.
+        device = self.mean.device
+        self.mean = torch.as_tensor(
+            state["mean"], dtype=torch.float32, device=device
+        ).clone()
+        var = torch.as_tensor(state["var"], dtype=torch.float32, device=device).clone()
+        self.var = var
         self.count = float(state["count"])
