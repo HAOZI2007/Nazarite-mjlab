@@ -60,3 +60,6 @@ Thumbs.db
 *~
 *.swp
 *.swo
+
+# Local scratch space for analysis scripts and probe output.
+.scratch/
