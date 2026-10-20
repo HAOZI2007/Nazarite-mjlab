@@ -12,6 +12,7 @@ import torch
 from tensordict import TensorDict
 
 from nazarite.rl.him_runner import HIMOnPolicyRunner
+from nazarite.rl.wmp.amp import AdversarialMotionPrior
 from nazarite.rl.wmp.replay import WorldModelReplay
 from nazarite.rl.wmp.world_model import WMPWorldModel, WMPWorldModelCfg
 
@@ -76,6 +77,25 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         self._wm_feature: torch.Tensor | None = None
         self._wm_step_index = 0
         self._wm_pretrained = False
+
+        amp_values = dict(train_cfg.get("amp", {}))
+        self.amp: AdversarialMotionPrior | None = None
+        self._amp_runtime_cfg = {
+            "updates_per_iteration": int(amp_values.get("updates_per_iteration", 1)),
+        }
+        if amp_values.get("enabled", False):
+            self.amp = AdversarialMotionPrior(
+                device=self.device,
+                motion_dir=amp_values.get("motion_dir"),
+                hidden_dims=tuple(amp_values.get("hidden_dims", (1024, 512))),
+                style_coefficient=float(amp_values.get("style_coefficient", 0.15)),
+                batch_size=int(amp_values.get("batch_size", 256)),
+                learning_rate=float(amp_values.get("learning_rate", 1.0e-4)),
+                grad_penalty=float(amp_values.get("grad_penalty", 10.0)),
+                seed=amp_values.get("seed"),
+            )
+        self._amp_prev: torch.Tensor | None = None
+        self._amp_pairs: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
     def _new_replay(self) -> WorldModelReplay:
         cfg = self.world_model.cfg
@@ -255,6 +275,29 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             )
         return metrics
 
+    def _update_amp(self) -> dict[str, float]:
+        """One discriminator step per iteration, on this iteration's transitions."""
+        if not self._amp_pairs:
+            return {}
+        current = torch.cat([pair[0] for pair in self._amp_pairs], dim=0)
+        following = torch.cat([pair[1] for pair in self._amp_pairs], dim=0)
+        valid = torch.cat([pair[2] for pair in self._amp_pairs], dim=0)
+        self._amp_pairs.clear()
+        if int(valid.sum()) < 2:
+            return {}
+        current = current[valid]
+        following = following[valid]
+        values = [
+            self.amp.update(current, following)
+            for _ in range(self._amp_runtime_cfg["updates_per_iteration"])
+        ]
+        metrics = {
+            f"amp/{key}": sum(item[key] for item in values) / len(values)
+            for key in values[0]
+        }
+        metrics["amp/bad_values"] = float(self.amp.bad_values)
+        return metrics
+
     def _pretrain_world_model(self) -> dict[str, float]:
         """Train the freshly warmed-up world model in one burst.
 
@@ -312,12 +355,19 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         )
         self._wm_step_index = 0
         self._wm_pretrained = False
+        if self.amp is not None:
+            self._amp_prev = obs["amp"].to(self.device).clone()
+            self._amp_pairs.clear()
         policy_obs = self._encode_current_observation(obs)
         self.alg.train_mode()
         self.world_model.train()
         if self.is_distributed:
             self.alg.broadcast_parameters()
         self.logger.init_logging_writer()
+        # The vectorised wrapper does not forward ``step_dt``; the underlying
+        # environment is the only place it lives. Every reward weight is scaled by
+        # it (scale_rewards_by_dt), so the style reward must use the same number.
+        step_dt = float(self.env.unwrapped.step_dt)
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
 
@@ -333,6 +383,25 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                     next_obs = next_obs.to(self.device)
                     rewards = rewards.to(self.device)
                     dones = dones.to(self.device)
+                    if self.amp is not None:
+                        amp_now = next_obs["amp"].to(self.device)
+                        # The style reward is added to the task reward, not
+                        # blended into it: the reference does the same, and the
+                        # discriminator is already scaled to reward-weight units.
+                        rewards = (
+                            rewards
+                            + self.amp.style_reward(self._amp_prev, amp_now) * step_dt
+                        )
+                        # A reset teleports the robot, so a pair that straddles one
+                        # is not a transition and must not train the discriminator.
+                        self._amp_pairs.append(
+                            (
+                                self._amp_prev.detach().clone(),
+                                amp_now.detach().clone(),
+                                ~dones.bool(),
+                            )
+                        )
+                        self._amp_prev = amp_now
                     self.alg.process_env_step(next_obs, rewards, dones, extras)
                     self.logger.process_env_step(
                         rewards, dones, extras, self.alg.intrinsic_rewards
@@ -352,6 +421,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             collect_time = time.time() - start
             start = time.time()
             loss_dict = self.alg.update()
+            loss_dict.update(self._update_amp())
             if self.replay.total_frames >= self._wm_runtime_cfg["train_start_frames"]:
                 loss_dict.update(self._update_world_model())
                 if not self._wm_pretrained:
@@ -414,6 +484,8 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             self.world_model_optimizer.state_dict()
         )
         checkpoint["world_model_config"] = vars(self.world_model.cfg)
+        if self.amp is not None:
+            checkpoint["amp_state_dict"] = self.amp.state_dict()
         torch.save(checkpoint, path)
 
     def load(self, path, load_cfg=None, strict=True, map_location=None):
@@ -439,7 +511,33 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             state = checkpoint.get("world_model_optimizer_state_dict")
             if state is not None:
                 self.world_model_optimizer.load_state_dict(state)
+        self._load_amp_state(checkpoint)
         return infos
+
+    def _load_amp_state(self, checkpoint: dict) -> None:
+        """Restore the discriminator, loudly.
+
+        The reference implementation leaves the discriminator out of its
+        checkpoints, so a resumed run silently restarts it from random weights and
+        the style reward changes meaning mid-training. Say so instead.
+        """
+        state = checkpoint.get("amp_state_dict")
+        if self.amp is None:
+            if state is not None:
+                warnings.warn(
+                    "Checkpoint carries AMP weights but this run has AMP disabled; "
+                    "they are ignored.",
+                    RuntimeWarning,
+                )
+            return
+        if state is None:
+            warnings.warn(
+                "Checkpoint has no AMP weights: the discriminator, its optimiser and "
+                "its normaliser restart from scratch.",
+                RuntimeWarning,
+            )
+            return
+        self.amp.load_state_dict(state)
 
     def get_inference_policy(self, device: str | None = None) -> Any:
         target_device = torch.device(device or self.device)

@@ -162,3 +162,49 @@ def test_obstacle_columns_steer_back_towards_plus_x() -> None:
     assert torch.all(yaw >= low) and torch.all(yaw <= high)
   finally:
     env.close()
+
+
+@pytest.mark.slow
+def test_the_discriminator_sees_thirty_proprioceptive_numbers() -> None:
+  """The AMP group has to match the clip layout, or the prior learns nothing."""
+  env = _build(flat=True)
+  try:
+    obs, _ = env.reset()
+    assert env.observation_manager.group_obs_dim["amp"] == (30,)
+    state = obs["amp"]
+    assert state.shape == (NUM_ENVS, 30)
+    assert torch.isfinite(state).all()
+    # Not a policy input: the discriminator's view must stay out of the actor.
+    assert "amp" not in env.observation_manager.cfg["actor"].terms
+  finally:
+    env.close()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("probability", [0.0, 1.0])
+def test_reference_state_initialisation(probability: float) -> None:
+  """Off keeps the standing reset; on copies a clip frame onto the robot."""
+  cfg = Nazarite_WMP_HIM_Complex_Terrain_Go2(flat=True)
+  cfg.scene.num_envs = NUM_ENVS
+  cfg.events["reference_state_init"].params["probability"] = probability
+  env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
+  try:
+    env.reset()
+    robot = env.scene["robot"]
+    joints = robot.data.joint_pos
+    default = robot.data.default_joint_pos.expand_as(joints)
+    moved = not torch.allclose(joints, default, atol=1e-3)
+
+    if probability == 0.0:
+      assert not moved
+    else:
+      # Every environment starts mid-stride, i.e. nowhere near the stance pose.
+      assert moved
+      # The landing spot is the reset's; only z and the joints come from a clip.
+      assert torch.allclose(
+        robot.data.root_link_pos_w[:, 2],
+        torch.full((NUM_ENVS,), 0.32),
+        atol=1e-3,
+      )
+  finally:
+    env.close()

@@ -81,6 +81,28 @@ class RslRlWMPHIMRunnerCfg(RslRlHimRunnerCfg):
             "pretrain_updates": 100,
         }
     )
+    # Adversarial motion prior, replacing the hand-tuned gait rewards. The
+    # discriminator scores 30-dimensional proprioceptive transitions against the
+    # bundled Go2 trot clips; its score becomes an additive style reward.
+    amp: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": True,
+            "motion_dir": None,
+            "hidden_dims": (1024, 512),
+            # 0.15 x clamp(1 - (d-1)^2 / 4, 0). The reference uses 0.01, but it
+            # also keeps ~1.0 of task reward per step at its own dt; ours is
+            # dt-scaled and much smaller per step, so 0.01 would be invisible.
+            "style_coefficient": 0.15,
+            # 256 = 128 reference + 128 policy transitions per discriminator step,
+            # matching the reference's 1:1 mix.
+            "batch_size": 256,
+            "updates_per_iteration": 1,
+            "learning_rate": 1.0e-4,
+            # Gradient penalty on reference transitions only, as in the reference.
+            "grad_penalty": 10.0,
+            "seed": None,
+        }
+    )
 
 
 def go2_wmp_him_runner_cfg(

@@ -48,6 +48,8 @@ from nazarite.mdp.commands import TerrainConditionedVelocityCommandCfg
 from nazarite.rl.wmp.world_model import WMPWorldModelCfg
 
 WMP_FEATURE_DIM = 512
+WMP_REFERENCE_INIT_PROBABILITY = 0.0
+"""Share of episodes that start mid-stride from a reference clip (0 disables)."""
 WMP_DEPTH_CAMERA_NAME = "wmp_depth_camera"
 WMP_TRACKING_CLIP_TERRAINS = ("gap", "high_wall", "single_beam")
 WMP_FEET_EDGE_TERRAINS = ("gap", "high_wall", "plum_blossom", "single_beam")
@@ -144,6 +146,19 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
     # front legs, which is exactly the gait the 2026-10-17_22-32-26 run settled
     # into.
     cfg.events["reset_base"].params["velocity_range"] = {"x": (0.1, 0.35)}
+    # Reference state initialisation. Registered after ``reset_base`` on purpose:
+    # events run in registration order, so this overwrites joints and velocities
+    # that the course reset has just set. Off by default, because it changes what
+    # the policy sees at the start of every episode and stage one is the A/B
+    # baseline for it.
+    cfg.events["reference_state_init"] = EventTermCfg(
+        func=wmp_events.reference_state_initialization,
+        mode="reset",
+        params={
+            "probability": WMP_REFERENCE_INIT_PROBABILITY,
+            "motion_dir": None,
+        },
+    )
     # The shared config annotates the command map with the generic base type,
     # while this entry is concretely a TerrainConditionedVelocityCommandCfg.
     twist_cfg = cast(TerrainConditionedVelocityCommandCfg, cfg.commands["twist"])
@@ -386,6 +401,18 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         enable_corruption=False,
         history_length=0,
     )
+    # The discriminator's own view of the robot: absolute, noise-free, history-free,
+    # and deliberately not part of the actor's or the critic's observation. It is
+    # scored by the motion prior and turned into the style reward, so it has to be
+    # the same 30 numbers the clip loader produces.
+    cfg.observations["amp"] = ObservationGroupCfg(
+        terms={
+            "state": ObservationTermCfg(func=wmp_observations.amp_state),
+        },
+        concatenate_terms=True,
+        enable_corruption=False,
+        history_length=0,
+    )
 
     # Reward set aligned with the reference recipe. The manual gait-shaping
     # terms are gone: measured on 2026-10-19_22-53-44, the four terms that paid
@@ -578,6 +605,7 @@ def wmp_go2_world_model_cfg() -> WMPWorldModelCfg:
 __all__ = [
     "WMP_DEPTH_CAMERA_NAME",
     "WMP_FEATURE_DIM",
+    "WMP_REFERENCE_INIT_PROBABILITY",
     "Nazarite_WMP_HIM_Complex_Terrain_Go2",
     "wmp_go2_world_model_cfg",
 ]

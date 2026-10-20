@@ -11,6 +11,7 @@ from mjlab.envs.mdp.events import reset_root_state_uniform
 from mjlab.managers.event_manager import requires_model_fields
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_from_euler_xyz, quat_mul, sample_uniform
+from nazarite.rl.wmp.motion import MotionDataset, load_dataset
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -105,13 +106,96 @@ def randomize_depth_camera_mount(
     nominal_quat = default_quat.expand(len(env_ids), 4)
 
     env.sim.model.cam_pos[env_ids, camera_id] = default_pos + position_delta
-    env.sim.model.cam_quat[env_ids, camera_id] = quat_mul(
-        perturbation, nominal_quat
+    env.sim.model.cam_quat[env_ids, camera_id] = quat_mul(perturbation, nominal_quat)
+
+
+_MOTION_DATASETS: dict[tuple[str, str], MotionDataset] = {}
+
+
+def _motion_dataset(motion_dir: str | None, device: torch.device) -> MotionDataset:
+    """Cache one dataset per directory and device, keyed so CUDA runs stay separate."""
+    key = (str(motion_dir), str(device))
+    dataset = _MOTION_DATASETS.get(key)
+    if dataset is None:
+        dataset = MotionDataset(load_dataset(motion_dir).clips, device=device)
+        _MOTION_DATASETS[key] = dataset
+    return dataset
+
+
+def reference_state_initialization(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    probability: float = 0.0,
+    motion_dir: str | None = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """Start a share of episodes mid-stride, from a reference frame.
+
+    The reference task initialises 85% of its episodes from a clip frame so the
+    policy never has to discover a gait from a standstill; discovering it is what
+    took 2000 iterations and produced the crouched crawl earlier in this project.
+
+    Registered after the course reset, this only overwrites the fields a clip
+    describes: joints, joint velocity, base velocity and heading. The x/y landing
+    spot stays wherever the reset put it, and z follows the terrain under it. Root
+    velocities are rotated out of the clip frame, because a clip recorded heading
+    -20 degrees would otherwise drive the robot sideways.
+    """
+    if probability <= 0.0:
+        return
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    if len(env_ids) == 0:
+        return
+    mask = torch.rand(len(env_ids), device=env.device) < probability
+    if not bool(mask.any()):
+        return
+    ids = env_ids[mask]
+
+    asset = env.scene[asset_cfg.name]
+    states, yaw = _motion_dataset(motion_dir, env.device).sample_states(len(ids))
+    joint_pos = states[:, 0:12]
+    joint_vel = states[:, 18:30]
+    cos, sin = torch.cos(yaw), torch.sin(yaw)
+    linear = states[:, 12:15]
+    angular = states[:, 15:18]
+    linear_world = torch.stack(
+        (
+            cos * linear[:, 0] - sin * linear[:, 1],
+            sin * linear[:, 0] + cos * linear[:, 1],
+            linear[:, 2],
+        ),
+        dim=-1,
+    )
+    angular_world = torch.stack(
+        (
+            cos * angular[:, 0] - sin * angular[:, 1],
+            sin * angular[:, 0] + cos * angular[:, 1],
+            angular[:, 2],
+        ),
+        dim=-1,
+    )
+
+    root_pos = asset.data.root_link_pos_w[ids].clone()
+    root_pos[:, 2] = (
+        asset.data.default_root_state[ids, 2] + env.scene.env_origins[ids, 2]
+    )
+    root_quat = torch.zeros(len(ids), 4, device=env.device)
+    root_quat[:, 0] = torch.cos(0.5 * yaw)
+    root_quat[:, 3] = torch.sin(0.5 * yaw)
+
+    # Joints first: the pose write below moves the base, which is what the clip's
+    # joint angles are expressed relative to.
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=ids)
+    asset.write_root_link_pose_to_sim(torch.cat((root_pos, root_quat), dim=-1), ids)
+    asset.write_root_link_velocity_to_sim(
+        torch.cat((linear_world, angular_world), dim=-1), ids
     )
 
 
 __all__ = [
     "push_root_velocity_xy",
     "randomize_depth_camera_mount",
+    "reference_state_initialization",
     "reset_root_state_uniform_facing_course",
 ]

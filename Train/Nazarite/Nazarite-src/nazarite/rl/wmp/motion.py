@@ -64,6 +64,8 @@ class MotionClip:
     frame_duration: float = 0.02
     loop_mode: str = "Wrap"
     weight: float = 1.0
+    yaw: torch.Tensor | None = None
+    """Heading of every frame, used to initialise the episode facing the course."""
 
     def __post_init__(self) -> None:
         if self.states.ndim != 2 or self.states.shape[1] != AMP_OBSERVATION_DIM:
@@ -73,6 +75,32 @@ class MotionClip:
             )
         if self.states.shape[0] < 2:
             raise ValueError(f"{self.name}: a clip needs at least two frames")
+        if self.yaw is not None and self.yaw.shape != (self.states.shape[0],):
+            raise ValueError(
+                f"{self.name}: expected [{self.states.shape[0]}] yaw values, "
+                f"got {tuple(self.yaw.shape)}"
+            )
+
+    def to(self, device: str | torch.device) -> MotionClip:
+        """Return the same clip with its tensors on ``device``."""
+        return MotionClip(
+            name=self.name,
+            states=self.states.to(device),
+            frame_duration=self.frame_duration,
+            loop_mode=self.loop_mode,
+            weight=self.weight,
+            yaw=None if self.yaw is None else self.yaw.to(device),
+        )
+
+
+def yaw_from_frames(frames: torch.Tensor) -> torch.Tensor:
+    """Heading of each frame from its root quaternion (stored as ``x, y, z, w``)."""
+    if frames.ndim != 2 or frames.shape[1] != AMP_FRAME_DIM:
+        raise ValueError(
+            f"expected [frames, {AMP_FRAME_DIM}] clip frames, got {tuple(frames.shape)}"
+        )
+    x, y, z, w = frames[:, 3], frames[:, 4], frames[:, 5], frames[:, 6]
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y.square() + z.square()))
 
 
 def state_from_frames(frames: torch.Tensor) -> torch.Tensor:
@@ -97,6 +125,7 @@ def load_clip(path: Path) -> MotionClip:
         frame_duration=duration,
         loop_mode=str(payload.get("LoopMode", "Wrap")),
         weight=float(payload.get("MotionWeight", 1.0)),
+        yaw=yaw_from_frames(frames),
     )
 
 
@@ -124,6 +153,12 @@ class MotionDataset:
         self.clips = clips
         self.device = torch.device(device)
         self._states = [clip.states.to(self.device) for clip in clips]
+        self._yaws = [
+            torch.zeros(clip.states.shape[0], device=self.device)
+            if clip.yaw is None
+            else clip.yaw.to(self.device)
+            for clip in clips
+        ]
         weights = torch.tensor([clip.weight for clip in clips], dtype=torch.float32)
         if float(weights.sum()) <= 0.0:
             raise ValueError("motion clip weights must sum to a positive value")
@@ -139,9 +174,11 @@ class MotionDataset:
         """Draw ``(state, next_state)`` pairs, honouring per-clip weights."""
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
+        # Draw on the CPU and move afterwards: ``generator`` is a CPU generator,
+        # and a device-side generator would not be reproducible across stages.
         clip_ids = torch.searchsorted(
             self._cumulative,
-            torch.rand(batch_size, generator=generator, device=self.device),
+            torch.rand(batch_size, generator=generator, device="cpu").to(self.device),
         ).clamp_(max=len(self._states) - 1)
 
         current = torch.empty(batch_size, AMP_OBSERVATION_DIM, device=self.device)
@@ -154,11 +191,41 @@ class MotionDataset:
             states = self._states[index]
             frames = states.shape[0]
             offsets = torch.randint(
-                0, frames, (count,), generator=generator, device=self.device
-            )
+                0, frames, (count,), generator=generator, device="cpu"
+            ).to(self.device)
             current[selected] = states[offsets]
             following[selected] = states[(offsets + 1) % frames]
         return current, following
+
+    def all_states(self) -> torch.Tensor:
+        """Every reference state as one ``[frames, 30]`` tensor."""
+        return torch.cat(self._states, dim=0)
+
+    def sample_states(
+        self, batch_size: int, generator: torch.Generator | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Draw single frames with their heading, for reference state initialisation."""
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        clip_ids = torch.searchsorted(
+            self._cumulative,
+            torch.rand(batch_size, generator=generator, device="cpu").to(self.device),
+        ).clamp_(max=len(self._states) - 1)
+
+        states = torch.empty(batch_size, AMP_OBSERVATION_DIM, device=self.device)
+        yaws = torch.empty(batch_size, device=self.device)
+        for index in range(len(self._states)):
+            selected = clip_ids == index
+            if not bool(selected.any()):
+                continue
+            count = int(selected.sum())
+            frame_count = self._states[index].shape[0]
+            offsets = torch.randint(
+                0, frame_count, (count,), generator=generator, device="cpu"
+            ).to(self.device)
+            states[selected] = self._states[index][offsets]
+            yaws[selected] = self._yaws[index][offsets]
+        return states, yaws
 
 
 class AMPStateNormalizer:
