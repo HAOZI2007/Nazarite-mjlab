@@ -8,6 +8,10 @@ __pycache__/
 .ruff_cache/
 .tox/
 
+# NVIDIA Warp JIT kernel cache (regenerated on demand by mujoco_warp tests).
+.warpcache/
+wp__*/
+
 # Local virtual environments.
 .venv/
 venv/
