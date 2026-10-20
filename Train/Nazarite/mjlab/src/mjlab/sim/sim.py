@@ -340,6 +340,8 @@ class Simulation:
     self._sensor_context: SensorContext | None = None
 
     self.use_cuda_graph = self._should_use_cuda_graph()
+    # Counts sense() calls so throttled cameras know which steps to render.
+    self._sense_step = 0
     self.create_graph()
 
     self.nan_guard = NanGuard(self.cfg.nan_guard, self.num_envs, self._mj_model)
@@ -362,6 +364,7 @@ class Simulation:
     self.forward_graph = None
     self.reset_graph = None
     self.sense_graph = None
+    self.sense_graph_skip_render = None
     if self.use_cuda_graph:
       with _suspend_gc(), wp.ScopedDevice(self.wp_device):
         with wp.ScopedCapture() as capture:
@@ -375,8 +378,15 @@ class Simulation:
         self.reset_graph = capture.graph
         if self._sensor_context is not None:
           with wp.ScopedCapture() as capture:
-            self._sense_kernel()
+            self._sense_kernel(render=True)
           self.sense_graph = capture.graph
+          # Cameras that render every N > 1 sense steps need a second graph
+          # without the render pass: the branch lives in Python, so it cannot be
+          # decided inside a captured graph.
+          if self._sensor_context.render_interval > 1:
+            with wp.ScopedCapture() as capture:
+              self._sense_kernel(render=False)
+            self.sense_graph_skip_render = capture.graph
 
   # Properties.
 
@@ -525,6 +535,10 @@ class Simulation:
     Runs BVH refit, camera rendering, and raycasting in a single
     CUDA graph launch. Should be called once per env step, right
     before observation computation.
+
+    Rendering is skipped on sense steps where no camera is due according to its
+    ``update_interval``. Those steps keep the last rendered frame and launch the
+    sense graph without the render pass.
     """
     if self._sensor_context is None:
       return
@@ -532,25 +546,40 @@ class Simulation:
     ctx = self._sensor_context
     ctx.prepare()
 
+    render = self._render_due(ctx.render_interval)
     with wp.ScopedDevice(self.wp_device):
-      if self.use_cuda_graph and self.sense_graph is not None:
-        wp.capture_launch(self.sense_graph)
+      graph = self.sense_graph if render else self.sense_graph_skip_render
+      if self.use_cuda_graph and graph is not None:
+        wp.capture_launch(graph)
       else:
-        self._sense_kernel()
+        self._sense_kernel(render)
 
+    self._sense_step += 1
     ctx.finalize()
+
+  def _render_due(self, interval: int) -> bool:
+    """Whether this sense step should render the cameras."""
+    if interval <= 1:
+      return True
+    return self._sense_step % interval == 0
 
   # Private methods.
 
-  def _sense_kernel(self) -> None:
-    """GPU kernel sequence for sensing (captured in sense_graph)."""
+  def _sense_kernel(self, render: bool = True) -> None:
+    """GPU kernel sequence for sensing (captured in sense_graph).
+
+    Args:
+      render: Run the camera render pass. When False the depth/RGB buffers keep
+        the last rendered frame, which is what a camera with
+        ``update_interval > 1`` should return.
+    """
     assert self._sensor_context is not None
     ctx = self._sensor_context
     rc = ctx.render_context
 
     mjwarp.refit_bvh(self.wp_model, self.wp_data, rc)
 
-    if ctx.has_cameras:
+    if ctx.has_cameras and render:
       mjwarp.render(self.wp_model, self.wp_data, rc)
       ctx.unpack_rgb()
 

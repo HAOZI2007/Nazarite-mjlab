@@ -50,7 +50,7 @@ class RslRlHimAlgorithmCfg(RslRlPpoAlgorithmCfg):
   class_name: str = "rsl_rl.algorithms.him_ppo:HIMPPO"
   estimator_learning_rate: float = 1.0e-3
   estimator_max_grad_norm: float = 10.0
-  estimator_obs_groups: tuple[str, ...] = ("critic",)
+  estimator_obs_groups: tuple[str, ...] = ("estimator",)
   # Critic layout: actor frame excluding command, plus privileged velocity.
   estimator_target_slices: tuple[tuple[int, int], ...] = ((0, 6), (9, 47), (47, 50))
   estimator_velocity_slice: tuple[int, int] = (47, 50)

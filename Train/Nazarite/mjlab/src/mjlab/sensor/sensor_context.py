@@ -94,6 +94,17 @@ class SensorContext:
     return len(self.raycast_sensors) > 0
 
   @property
+  def render_interval(self) -> int:
+    """Sense steps between two camera render passes.
+
+    Camera sensors share a single render pass, so the scene renders as often as
+    the slowest camera asks for. Returns 1 when nothing needs throttling.
+    """
+    if not self.camera_sensors:
+      return 1
+    return max(int(s.cfg.update_interval) for s in self.camera_sensors)
+
+  @property
   def render_context(self) -> mjwarp.RenderContext:
     return self._ctx
 

@@ -5,6 +5,15 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Added
+^^^^^
+
+- Added ``CameraSensorCfg.update_interval`` so a camera sensor can render every
+  N sense steps instead of every step. Skipped steps reuse the last rendered
+  frame, which keeps expensive visual observations such as depth images slower
+  than the control loop. ``SensorContext.render_interval`` reports the
+  resulting period.
+
 Changed
 ^^^^^^^
 

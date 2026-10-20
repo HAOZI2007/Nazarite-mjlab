@@ -103,6 +103,19 @@ class CameraSensorCfg(SensorCfg):
   Set to True if you modify the returned data in-place.
   """
 
+  update_interval: int = 1
+  """Render this camera every ``update_interval`` simulator sense steps.
+
+  Rendering is by far the most expensive part of a sense step (one ray per
+  pixel per environment), so a policy that does not need a fresh image every
+  control step can pay a fraction of that cost. Skipped steps keep the previous
+  frame in the (persistent) depth buffer, which is exactly what a lower camera
+  frame rate looks like to a downstream encoder.
+
+  A value of 1 renders every step. All camera sensors share one render pass, so
+  the effective interval of the scene is the largest interval among them.
+  """
+
   def __post_init__(self) -> None:
     valid = {"rgb", "depth", "segmentation"}
     invalid = {dt for dt in self.data_types if dt not in valid}
@@ -110,6 +123,8 @@ class CameraSensorCfg(SensorCfg):
       raise ValueError(f"Invalid camera data types: {invalid}. Valid types: {valid}")
     if not self.data_types:
       raise ValueError("At least one data type must be specified.")
+    if self.update_interval < 1:
+      raise ValueError(f"update_interval must be >= 1, got {self.update_interval}.")
     has_focal = self.focal_length_px is not None
     has_principal = self.principal_point_px is not None
     if has_focal != has_principal:

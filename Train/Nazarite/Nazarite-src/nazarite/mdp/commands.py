@@ -38,7 +38,10 @@ class HimBehaviorCommandCfg(CommandTermCfg):
     def __post_init__(self) -> None:
         if self.body_height_range[1] < self.body_height_range[0]:
             raise ValueError("body_height_range must be increasing")
-        if self.stance_width_range[0] <= 0.0 or self.stance_width_range[1] < self.stance_width_range[0]:
+        if (
+            self.stance_width_range[0] <= 0.0
+            or self.stance_width_range[1] < self.stance_width_range[0]
+        ):
             raise ValueError("stance_width_range must be positive and increasing")
 
 
@@ -48,9 +51,13 @@ class HimBehaviorCommand(CommandTerm):
     def __init__(self, cfg: HimBehaviorCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         self._command = torch.zeros(self.num_envs, 2, device=self.device)
-        self._command[:, 1] = 0.5 * (cfg.stance_width_range[0] + cfg.stance_width_range[1])
+        self._command[:, 1] = 0.5 * (
+            cfg.stance_width_range[0] + cfg.stance_width_range[1]
+        )
         self._gui_enabled: viser.GuiCheckboxHandle | None = None
-        self._gui_sliders: tuple[viser.GuiSliderHandle, viser.GuiSliderHandle] | None = None
+        self._gui_sliders: (
+            tuple[viser.GuiSliderHandle, viser.GuiSliderHandle] | None
+        ) = None
         self._gui_get_env_idx: Callable[[], int] | None = None
 
     @property
@@ -63,8 +70,12 @@ class HimBehaviorCommand(CommandTerm):
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         sample_ids = env_ids
         if self.cfg.freeze_when_standing:
-            twist = self._env.command_manager.get_command(self.cfg.velocity_command_name)
-            standing = torch.linalg.norm(twist[env_ids], dim=1) < self.cfg.standing_threshold
+            twist = self._env.command_manager.get_command(
+                self.cfg.velocity_command_name
+            )
+            standing = (
+                torch.linalg.norm(twist[env_ids], dim=1) < self.cfg.standing_threshold
+            )
             sample_ids = env_ids[~standing]
         if len(sample_ids) == 0:
             return
@@ -96,12 +107,17 @@ class HimBehaviorCommand(CommandTerm):
         with server.gui.add_folder(name.capitalize()):
             enabled = server.gui.add_checkbox("Enable", initial_value=True)
             height = server.gui.add_slider(
-                "Body height (m)", min=height_low, max=height_high,
-                step=0.005, initial_value=0.32,
+                "Body height (m)",
+                min=height_low,
+                max=height_high,
+                step=0.005,
+                initial_value=0.32,
             )
             stance = server.gui.add_slider(
-                "Stance width (m)", min=self.cfg.stance_width_range[0],
-                max=self.cfg.stance_width_range[1], step=0.005,
+                "Stance width (m)",
+                min=self.cfg.stance_width_range[0],
+                max=self.cfg.stance_width_range[1],
+                step=0.005,
                 initial_value=0.5 * sum(self.cfg.stance_width_range),
             )
             neutral = server.gui.add_button("Neutral", icon=Icon.SQUARE_X)
@@ -472,11 +488,11 @@ class ScheduledVelocityCommandCfg(UniformVelocityCommandCfg):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.heading_command or self.rel_heading_envs != 0.0:
-            raise ValueError(
-                "ScheduledVelocityCommand requires heading_command=False and "
-                "rel_heading_envs=0.0."
-            )
+        # Heading mode is supported: the base ``_update_command`` already turns a
+        # heading error into a yaw rate each step, which actively steers the robot
+        # back onto +x instead of merely never commanding a turn.
+        if self.heading_command and self.ranges.heading is None:
+            raise ValueError("heading_command requires ranges.heading to be set.")
         previous_step = -1
         for stage in self.stages:
             if stage.step < 0 or stage.step < previous_step:
@@ -530,6 +546,12 @@ class ScheduledVelocityCommand(UniformVelocityCommand):
         self.vel_command_b[env_ids, 0] = r.uniform_(*x_range)
         self.vel_command_b[env_ids, 1] = r.uniform_(*y_range)
         self.vel_command_b[env_ids, 2] = r.uniform_(*yaw_range)
+        if self.cfg.heading_command:
+            assert self.cfg.ranges.heading is not None
+            self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
+            self.is_heading_env[env_ids] = (
+                r.uniform_(0.0, 1.0) <= self.cfg.rel_heading_envs
+            )
         self.is_standing_env[env_ids] = (
             r.uniform_(0.0, 1.0) <= self.cfg.rel_standing_envs
         )
@@ -558,6 +580,10 @@ class TerrainConditionedVelocityCommandCfg(ScheduledVelocityCommandCfg):
     """Terrain generator columns that should only be traversed in +x."""
     forward_only_x_min: float = 0.1
     """Lower bound for positive x commands on the selected terrains."""
+    forward_only_x_max: float | None = None
+    """Optional adaptive upper bound for forward-only x commands."""
+    forward_only_zero_below: float = 0.0
+    """Set sampled forward commands at or below this value to zero."""
 
     def build(self, env: ManagerBasedRlEnv) -> TerrainConditionedVelocityCommand:
         return TerrainConditionedVelocityCommand(self, env)
@@ -566,6 +592,12 @@ class TerrainConditionedVelocityCommandCfg(ScheduledVelocityCommandCfg):
         super().__post_init__()
         if self.forward_only_x_min < 0.0:
             raise ValueError("forward_only_x_min must be non-negative")
+        if self.forward_only_x_max is not None and (
+            self.forward_only_x_max < self.forward_only_x_min
+        ):
+            raise ValueError("forward_only_x_max must be >= forward_only_x_min")
+        if self.forward_only_zero_below < 0.0:
+            raise ValueError("forward_only_zero_below must be non-negative")
 
 
 class TerrainConditionedVelocityCommand(ScheduledVelocityCommand):
@@ -621,10 +653,22 @@ class TerrainConditionedVelocityCommand(ScheduledVelocityCommand):
 
         x_range, _, _ = self._active_ranges()
         x_low = max(float(self.cfg.forward_only_x_min), 0.0)
-        x_high = max(float(x_range[1]), x_low)
+        configured_x_high = (
+            x_range[1]
+            if self.cfg.forward_only_x_max is None
+            else self.cfg.forward_only_x_max
+        )
+        x_high = max(float(configured_x_high), x_low)
         r = torch.empty(len(selected_ids), device=self.device)
-        self.vel_command_b[selected_ids, 0] = r.uniform_(x_low, x_high)
+        x_command = r.uniform_(x_low, x_high)
+        x_command[x_command <= self.cfg.forward_only_zero_below] = 0.0
+        self.vel_command_b[selected_ids, 0] = x_command
         self.vel_command_b[selected_ids, 1:] = 0.0
+        if self.cfg.heading_command:
+            # A course is traversed along +x, so the heading target is zero and
+            # the base update turns the robot back should it drift.
+            self.heading_target[selected_ids] = 0.0
+            self.is_heading_env[selected_ids] = True
         self.vel_command_w[selected_ids] = self.vel_command_b[selected_ids]
         self.is_forward_env[selected_ids] = True
 

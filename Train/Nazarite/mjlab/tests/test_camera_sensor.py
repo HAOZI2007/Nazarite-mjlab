@@ -100,6 +100,75 @@ def test_camera_depth_shape(device):
   assert data.rgb is None
 
 
+def test_camera_update_interval_throttles_rendering(device):
+  """update_interval > 1 reuses the previous frame instead of re-rendering."""
+  cam_cfg = CameraSensorCfg(
+    name="test_cam",
+    camera_name="world/overhead_cam",
+    width=32,
+    height=24,
+    data_types=("depth",),
+    update_interval=2,
+  )
+  scene, sim = _make_scene_and_sim(device, sensors=(cam_cfg,))
+  ctx = scene.sensor_context
+  assert ctx is not None
+  assert ctx.render_interval == 2
+  sensor = scene["test_cam"]
+
+  sim.forward()
+  sim.sense()  # Sense step 0: rendered.
+  rendered = sensor.data.depth.clone()
+  assert (rendered > 0).any()
+
+  # Overwrite the persistent depth buffer; a skipped render leaves it intact.
+  stale_value = 12345.0
+  ctx.get_depth(sensor.camera_idx).fill_(stale_value)
+
+  sim.sense()  # Sense step 1: render skipped, stale frame is served.
+  torch.testing.assert_close(
+    sensor.data.depth, torch.full_like(sensor.data.depth, stale_value)
+  )
+
+  sim.sense()  # Sense step 2: rendered again, stale frame replaced.
+  torch.testing.assert_close(sensor.data.depth, rendered, rtol=0, atol=1e-6)
+
+
+def test_camera_default_render_interval(device):
+  """Cameras render every sense step unless update_interval is raised."""
+  cam_cfg = CameraSensorCfg(
+    name="test_cam",
+    camera_name="world/overhead_cam",
+    width=32,
+    height=24,
+    data_types=("depth",),
+  )
+  scene, sim = _make_scene_and_sim(device, sensors=(cam_cfg,))
+  ctx = scene.sensor_context
+  assert ctx is not None
+  assert ctx.render_interval == 1
+
+  sim.forward()
+  sim.sense()
+  rendered = scene["test_cam"].data.depth.clone()
+  ctx.get_depth(scene["test_cam"].camera_idx).fill_(12345.0)
+  sim.sense()
+  torch.testing.assert_close(scene["test_cam"].data.depth, rendered, rtol=0, atol=1e-6)
+
+
+def test_camera_update_interval_validation():
+  """update_interval below 1 is rejected."""
+  with pytest.raises(ValueError, match="update_interval must be >= 1"):
+    CameraSensorCfg(
+      name="test_cam",
+      camera_name="world/overhead_cam",
+      width=32,
+      height=24,
+      data_types=("depth",),
+      update_interval=0,
+    )
+
+
 def test_camera_rgb_and_depth(device):
   """Both RGB and depth can be requested simultaneously."""
   cam_cfg = CameraSensorCfg(
