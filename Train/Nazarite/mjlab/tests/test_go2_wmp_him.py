@@ -296,9 +296,11 @@ def test_forward_course_bounds_only_blocks_forward_obstacle_tiles():
     ),
     terrain_types=torch.tensor([0, 1, 1]),
   )
+  # The track is 7.20 m wide with a 0.40 m void on either side, so the margin of
+  # 0.60 m puts the bound at |y| = 3.4 m: 3.2 m is still on deck, 3.9 m is not.
   robot = SimpleNamespace(
     data=SimpleNamespace(
-      root_link_pos_w=torch.tensor([[0.0, 4.5, 0.0], [0.0, 3.7, 0.0], [0.0, 3.9, 0.0]])
+      root_link_pos_w=torch.tensor([[0.0, 4.5, 0.0], [0.0, 3.2, 0.0], [0.0, 3.9, 0.0]])
     )
   )
 

@@ -325,7 +325,11 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
             func=wmp_terminations.forward_course_bounds,
             params={
                 "terrain_names": WMP_FORWARD_TERRAIN_NAMES,
-                "lateral_margin": 0.20,
+                # Each track is 7.20 m wide with a 0.40 m void on either side, so
+                # 0.60 leaves 0.20 m of deck before the edge: wide enough that a
+                # one-frame overshoot does not end the episode, narrow enough that
+                # a policy cannot walk beside the obstacles instead of over them.
+                "lateral_margin": 0.60,
             },
         ),
     }

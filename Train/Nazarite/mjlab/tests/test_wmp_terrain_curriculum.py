@@ -21,6 +21,7 @@ from nazarite.config.train_config.env_cfgs.wmp_terrain import (
   WMP_OMNI_TERRAIN_NAMES,
   WMP_TERRAIN_NAMES,
   WMP_TERRAINS_CFG,
+  WMP_TRACK_VOID,
   _difficulty,
 )
 from nazarite.mdp.commands import TerrainConditionedVelocityCommand
@@ -194,6 +195,68 @@ def test_plum_blossom_stones_are_flush_with_start_platform(difficulty: float):
   for stone in stones:
     assert stone is not None
     assert stone.pos[2] + stone.size[2] == pytest.approx(platform_top)
+
+
+def _geom_y_span(
+  model: mujoco.MjModel, geom_index: int, spec_vertices
+) -> tuple[float, float]:
+  """The y extent a single compiled geom occupies inside its tile."""
+  geom_type = model.geom_type[geom_index]
+  position = model.geom_pos[geom_index]
+  size = model.geom_size[geom_index]
+  if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+    return float(position[1] - size[1]), float(position[1] + size[1])
+  if geom_type in (mujoco.mjtGeom.mjGEOM_CYLINDER, mujoco.mjtGeom.mjGEOM_SPHERE):
+    return float(position[1] - size[0]), float(position[1] + size[0])
+  assert geom_type == mujoco.mjtGeom.mjGEOM_MESH
+  # Mesh vertices are stored around the geom origin, so the extent has to be
+  # rebuilt from both the vertices and ``geom_pos``.
+  return (
+    float(spec_vertices[:, 1].min() + position[1]),
+    float(spec_vertices[:, 1].max() + position[1]),
+  )
+
+
+@pytest.mark.parametrize("terrain_name", WMP_TERRAIN_NAMES)
+@pytest.mark.parametrize("difficulty", (0.0, 1.0))
+def test_no_terrain_geometry_reaches_into_the_track_void(
+  terrain_name: str, difficulty: float
+):
+  """Neighbouring tracks are 0.80 m apart, so the strip has to stay empty.
+
+  A deck that extends into the strip gives the policy a bypass around every
+  obstacle; a beam or a ramp that does is the same bypass at knee height.
+  """
+  generator_cfg = deepcopy(WMP_TERRAINS_CFG)
+  subterrain = generator_cfg.sub_terrains[terrain_name]
+  subterrain.size = generator_cfg.size
+  low = WMP_TRACK_VOID
+  high = generator_cfg.size[1] - WMP_TRACK_VOID
+  assert high - low == pytest.approx(7.20)
+
+  spec = mujoco.MjSpec()
+  spec.worldbody.add_body(name="terrain")
+  output = subterrain.function(difficulty, spec, np.random.default_rng(0))
+  model = spec.compile()
+  assert model.ngeom == len(output.geometries)
+
+  for index in range(len(output.geometries)):
+    vertices = np.zeros((0, 3))
+    if model.geom_type[index] == mujoco.mjtGeom.mjGEOM_MESH:
+      mesh_id = int(model.geom_dataid[index])
+      start = int(model.mesh_vertadr[mesh_id])
+      count = int(model.mesh_vertnum[mesh_id])
+      vertices = model.mesh_vert[start : start + count]
+    span = _geom_y_span(model, index, vertices)
+    assert span[0] >= low - 1e-6, (terrain_name, difficulty, index, span)
+    assert span[1] <= high + 1e-6, (terrain_name, difficulty, index, span)
+
+
+def test_the_void_keeps_nine_terrain_columns():
+  generator_cfg = deepcopy(WMP_TERRAINS_CFG)
+  assert len(generator_cfg.sub_terrains) == 9
+  assert generator_cfg.size == (8.0, 8.0)
+  assert len(WMP_TERRAINS_CFG.sub_terrains) == _NUM_COLUMNS
 
 
 def test_full_curriculum_generator_compiles_all_patches():

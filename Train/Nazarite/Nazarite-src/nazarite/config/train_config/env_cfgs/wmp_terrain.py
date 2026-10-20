@@ -19,7 +19,6 @@ from mjlab.terrains.terrain_generator import (
     TerrainGeometry,
     TerrainOutput,
 )
-from mjlab.terrains.utils import make_plane
 
 WMP_TERRAIN_NAMES = (
     "stairs",
@@ -104,13 +103,28 @@ def _box(
     return TerrainGeometry(geom=geom, color=color)
 
 
-def _floor(body: mujoco.MjsBody, size: tuple[float, float]) -> TerrainGeometry:
-    geom = make_plane(body, size, 0.0, center_zero=False)[0]
-    return TerrainGeometry(geom=geom, color=_FLOOR)
+WMP_TRACK_VOID = 0.40
+"""Ground left empty on each side of a track.
+
+Neighbouring tracks are therefore 0.80 m apart with nothing in between. Robots
+never collide with each other, so the standing temptation is to walk around an
+obstacle instead of over it; a void with nothing to stand on turns that shortcut
+into a fall.
+"""
+
+
+def _track_bounds(size: tuple[float, float]) -> tuple[float, float]:
+    """The walkable span in y: the tile minus one void on each side."""
+    low = float(WMP_TRACK_VOID)
+    high = float(size[1]) - low
+    if high <= low:
+        raise ValueError(f"a {size[1]} m wide tile cannot carry two {low} m voids")
+    return low, high
 
 
 def _floor_region(
     body: mujoco.MjsBody,
+    size: tuple[float, float],
     x0: float,
     x1: float,
     y0: float,
@@ -118,12 +132,24 @@ def _floor_region(
     top: float,
     thickness: float = 0.10,
 ) -> TerrainGeometry:
+    """A deck patch, clipped to the walkable band so the void stays empty."""
+    low, high = _track_bounds(size)
+    clipped0 = max(float(y0), low)
+    clipped1 = min(float(y1), high)
     return _box(
         body,
-        ((x1 - x0) / 2, (y1 - y0) / 2, thickness / 2),
-        ((x0 + x1) / 2, (y0 + y1) / 2, top - thickness / 2),
+        ((x1 - x0) / 2, (clipped1 - clipped0) / 2, thickness / 2),
+        ((x0 + x1) / 2, (clipped0 + clipped1) / 2, top - thickness / 2),
         _FLOOR,
     )
+
+
+def _floor(body: mujoco.MjsBody, size: tuple[float, float]) -> TerrainGeometry:
+    """The main deck of a track: finite, and inset by the void on both sides."""
+    low, high = _track_bounds(size)
+    # A box, not ``make_plane``'s infinite extent: the strip between tracks has to
+    # be a hole the robot can fall through.
+    return _floor_region(body, size, 0.0, size[0], low, high, 0.0, thickness=1.0)
 
 
 def _origin(size: tuple[float, float]) -> np.ndarray:
@@ -312,11 +338,12 @@ class WmpLowFrameTerrainCfg(SubTerrainCfg):
         body = spec.body("terrain")
         geoms = [_floor(body, self.size)]
         height = _lerp(difficulty, *self.opening_height_range)
-        beam_half_width = self.size[1] / 2
+        low, high = _track_bounds(self.size)
+        beam_half_width = (high - low) / 2
         post = 0.10
         for cx in self.obstacle_positions:
             post_z = (height + self.beam_thickness) / 2
-            for y in (post / 2, self.size[1] - post / 2):
+            for y in (low + post / 2, high - post / 2):
                 geoms.append(
                     _box(
                         body,
@@ -360,7 +387,8 @@ class WmpStairsTerrainCfg(SubTerrainCfg):
         step_height = _lerp(difficulty, *self.step_height_range)
         step_depth = _lerp(difficulty, *self.step_depth_range)
         cy = self.size[1] / 2
-        half_width = self.size[1] / 2 - self.lane_margin
+        low, high = _track_bounds(self.size)
+        half_width = min(self.size[1] / 2 - self.lane_margin, (high - low) / 2)
         x = self.start_platform_length
         for index in range(self.step_count):
             height = step_height * (index + 1)
@@ -378,6 +406,7 @@ class WmpStairsTerrainCfg(SubTerrainCfg):
         geoms.append(
             _floor_region(
                 body,
+                self.size,
                 x,
                 x + self.top_platform_length,
                 self.lane_margin,
@@ -402,6 +431,7 @@ class WmpStairsTerrainCfg(SubTerrainCfg):
         geoms.append(
             _floor_region(
                 body,
+                self.size,
                 0.0,
                 self.start_platform_length,
                 0.0,
@@ -409,7 +439,9 @@ class WmpStairsTerrainCfg(SubTerrainCfg):
                 0.0,
             )
         )
-        geoms.append(_floor_region(body, x, self.size[0], 0.0, self.size[1], 0.0))
+        geoms.append(
+            _floor_region(body, self.size, x, self.size[0], 0.0, self.size[1], 0.0)
+        )
         return TerrainOutput(origin=_origin(self.size), geometries=geoms)
 
 
@@ -429,13 +461,14 @@ class WmpHighWallTerrainCfg(SubTerrainCfg):
         body = spec.body("terrain")
         geoms = [_floor(body, self.size)]
         height = _lerp(difficulty, *self.wall_height_range)
-        wall_width = self.wall_width or self.size[1]
+        low, high = _track_bounds(self.size)
+        wall_width = self.wall_width or (high - low)
         for obstacle_x in self.obstacle_positions:
             geoms.append(
                 _box(
                     body,
                     (self.wall_thickness / 2, wall_width / 2, height / 2),
-                    (obstacle_x, self.size[1] / 2, height / 2),
+                    (obstacle_x, (low + high) / 2, height / 2),
                     _WALL,
                 )
             )
@@ -472,11 +505,16 @@ class WmpGapTerrainCfg(SubTerrainCfg):
         pit_depth = _lerp(difficulty, *self.pit_depth_range)
         x = self.start_platform_length
         for _ in range(self.gap_count):
-            geoms.append(_floor_region(body, x, x + gap, 0.0, self.size[1], -pit_depth))
+            geoms.append(
+                _floor_region(
+                    body, self.size, x, x + gap, 0.0, self.size[1], -pit_depth
+                )
+            )
             x += gap
             geoms.append(
                 _floor_region(
                     body,
+                    self.size,
                     x,
                     x + self.landing_length,
                     0.0,
@@ -488,10 +526,12 @@ class WmpGapTerrainCfg(SubTerrainCfg):
         geoms.insert(
             0,
             _floor_region(
-                body, 0.0, self.start_platform_length, 0.0, self.size[1], 0.0
+                body, self.size, 0.0, self.start_platform_length, 0.0, self.size[1], 0.0
             ),
         )
-        geoms.append(_floor_region(body, x, self.size[0], 0.0, self.size[1], 0.0))
+        geoms.append(
+            _floor_region(body, self.size, x, self.size[0], 0.0, self.size[1], 0.0)
+        )
         return TerrainOutput(origin=_origin(self.size), geometries=geoms)
 
 
@@ -511,9 +551,10 @@ class WmpRampTerrainCfg(SubTerrainCfg):
         body = spec.body("terrain")
         geoms = [_floor(body, self.size)]
         cy = self.size[1] / 2
+        low, high = _track_bounds(self.size)
         angle = math.radians(_lerp(difficulty, *self.angle_range))
         length = _lerp(difficulty, *self.length_range)
-        width = self.width or self.size[1]
+        width = self.width or (high - low)
         rise = length * math.sin(angle)
         geoms.append(
             _trapezoid_prism(
@@ -608,7 +649,7 @@ class WmpTireArrayTerrainCfg(SubTerrainCfg):
     tire_outer_diameter: float = 0.55
     tire_inner_diameter: float = 0.33
     tire_width: float = 0.165
-    pitch_range: tuple[float, float] = (1.15, 0.90)
+    pitch_range: tuple[float, float] = (0.98, 0.76)
     ring_segments: int = 8
 
     def function(
@@ -673,10 +714,17 @@ class WmpPlumBlossomTerrainCfg(SubTerrainCfg):
         geoms.extend(
             (
                 _floor_region(
-                    body, 0.0, self.start_platform_length, 0.0, self.size[1], 0.0
+                    body,
+                    self.size,
+                    0.0,
+                    self.start_platform_length,
+                    0.0,
+                    self.size[1],
+                    0.0,
                 ),
                 _floor_region(
                     body,
+                    self.size,
                     self.start_platform_length,
                     self.finish_platform_start,
                     0.0,
@@ -685,6 +733,7 @@ class WmpPlumBlossomTerrainCfg(SubTerrainCfg):
                 ),
                 _floor_region(
                     body,
+                    self.size,
                     self.finish_platform_start,
                     self.size[0],
                     0.0,
@@ -699,11 +748,17 @@ class WmpPlumBlossomTerrainCfg(SubTerrainCfg):
             x_pitch,
         )
         y_positions = np.arange(y_pitch / 2, self.size[1], y_pitch)
+        low, high = _track_bounds(self.size)
+        half_block = block_size / 2
         for row, x in enumerate(x_positions):
             offset = 0.0 if row % 2 == 0 else y_pitch / 2
             for y in y_positions:
                 center_y = float(y + offset)
-                if center_y > self.size[1] - block_size / 2:
+                # Stones that would spill into either void are dropped rather
+                # than clipped: a clipped stone is a smaller step, a partial
+                # stone hanging over the drop is a foothold that should not
+                # exist.
+                if center_y < low + half_block or center_y > high - half_block:
                     continue
                 geoms.append(
                     _box(
@@ -741,16 +796,21 @@ class WmpSingleBeamTerrainCfg(SubTerrainCfg):
         cy = self.size[1] / 2
         geoms.extend(
             (
-                _floor_region(body, 0.0, self.pit_start, 0.0, self.size[1], 0.0),
+                _floor_region(
+                    body, self.size, 0.0, self.pit_start, 0.0, self.size[1], 0.0
+                ),
                 _floor_region(
                     body,
+                    self.size,
                     self.pit_start,
                     self.pit_end,
                     0.0,
                     self.size[1],
                     -pit_depth,
                 ),
-                _floor_region(body, self.pit_end, self.size[0], 0.0, self.size[1], 0.0),
+                _floor_region(
+                    body, self.size, self.pit_end, self.size[0], 0.0, self.size[1], 0.0
+                ),
             )
         )
         width = _lerp(difficulty, *self.bridge_width_range)

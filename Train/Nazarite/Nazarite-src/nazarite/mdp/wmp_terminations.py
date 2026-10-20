@@ -91,7 +91,7 @@ def fall(
 def forward_course_bounds(
     env: ManagerBasedRlEnv,
     terrain_names: tuple[str, ...],
-    lateral_margin: float = 0.20,
+    lateral_margin: float = 0.60,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Prevent forward-course agents from escaping into an adjacent tile."""
