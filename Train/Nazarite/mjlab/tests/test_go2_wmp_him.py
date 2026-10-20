@@ -100,6 +100,26 @@ def test_wmp_task_has_camera_feature_group_and_expected_reward_weights():
   assert play_edge.params["curriculum_start_iteration"] is None
 
 
+def test_wmp_actor_observation_has_no_gait_clock():
+  from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
+
+  cfg = Nazarite_WMP_HIM_Complex_Terrain_Go2()
+  assert "phase" not in cfg.observations["actor"].terms
+  assert "phase" not in cfg.observations["critic"].terms
+  assert "phase" not in cfg.observations["estimator"].terms
+
+  runner = go2_wmp_him_runner_cfg()
+  # 47 -> 45: two-dimension gait clock removed.
+  assert runner.actor.num_one_step_obs == 45
+  assert runner.actor.history_term_dims == (3, 3, 3, 12, 12, 12)
+  assert runner.actor.action_observation_slice == (33, 45)
+  # The estimator group is 48 wide (45 plus base linear velocity), and the
+  # targets have to reconstruct exactly the 45-dim one-step observation.
+  assert runner.algorithm.estimator_velocity_slice == (45, 48)
+  targets = runner.algorithm.estimator_target_slices
+  assert sum(stop - start for start, stop in targets) == 45
+
+
 def test_wmp_task_uses_the_reference_reward_set():
   cfg = Nazarite_WMP_HIM_Complex_Terrain_Go2()
 

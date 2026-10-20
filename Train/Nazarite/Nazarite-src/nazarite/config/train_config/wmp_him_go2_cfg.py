@@ -87,16 +87,18 @@ def go2_wmp_him_runner_cfg(
     experiment_name: str = "go2_wmp_him_complex",
 ) -> RslRlWMPHIMRunnerCfg:
     actor = RslRlWMPHIMActorCfg(
-        num_one_step_obs=47,
+        # 45, not 47: the gait clock (phase) is gone, because swing timing is the
+        # discriminator's job now and a hard-coded 0.6 s phase fights it.
+        num_one_step_obs=45,
         history_size=6,
-        history_term_dims=(3, 3, 3, 2, 12, 12, 12),
-        action_observation_slice=(35, 47),
+        history_term_dims=(3, 3, 3, 12, 12, 12),
+        action_observation_slice=(33, 45),
         obs_normalization=True,
     )
     algorithm = RslRlHimAlgorithmCfg(
         estimator_obs_groups=("estimator",),
-        estimator_target_slices=((0, 6), (9, 47), (47, 50)),
-        estimator_velocity_slice=(47, 50),
+        estimator_target_slices=((0, 6), (9, 45), (45, 48)),
+        estimator_velocity_slice=(45, 48),
         # 0.01 let the action std grow monotonically from 0.88 to 1.30 in the
         # 2026-10-17_22-32-26 run (every earlier run settled at 0.50-0.55), i.e.
         # 0.33 rad of noise on every joint: the gait turns into a shuffle and the

@@ -55,6 +55,33 @@ def test_stage_steps_and_every_term_evaluates(flat: bool) -> None:
 
     # The curriculum gate reads these, so they have to be wired up here too.
     assert "gait_diagonal_match" in env.metrics_manager._term_names
+
+    # One-step widths. The actor lost its gait clock (47 -> 45) so that the
+    # discriminator owns swing timing, and the estimator group is a copy of the
+    # critic terms, so it drops to 48 (45 plus base linear velocity). The HIM
+    # target slices in the runner config are tied to these two numbers.
+    dims = env.observation_manager.group_obs_dim
+    # Actor is (history, one-step): six frames of 45 numbers.
+    assert dims["actor"] == (6, 45)
+    assert dims["estimator"] == (48,)
+    assert "phase" not in env.observation_manager.cfg["actor"].terms
+
+    # Tie the runner's HIM constants to the widths the environment actually
+    # reports. A stale 47 in any of them is the failure mode this guards: it
+    # only surfaces on the first PPO update, long after the environment builds.
+    from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
+
+    runner_cfg = go2_wmp_him_runner_cfg()
+    one_step = dims["actor"][1]
+    estimator_width = dims["estimator"][0]
+    assert runner_cfg.actor.num_one_step_obs == one_step
+    assert sum(runner_cfg.actor.history_term_dims) == one_step
+    assert runner_cfg.actor.action_observation_slice[1] == one_step
+    start, stop = runner_cfg.algorithm.estimator_velocity_slice
+    assert stop == estimator_width and stop - start == 3
+    assert (
+      sum(b - a for a, b in runner_cfg.algorithm.estimator_target_slices) == one_step
+    )
   finally:
     env.close()
 

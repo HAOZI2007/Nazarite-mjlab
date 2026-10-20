@@ -571,6 +571,13 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         }
     )
 
+    # No gait clock. Swing timing is the discriminator's job from here on, and a
+    # hard-coded 0.6 s phase would fight whatever timing the reference clips ask
+    # for. The estimator group is popped too, because it is a copy of the critic
+    # terms and its width sets the HIM target slices.
+    for group in ("actor", "critic", "estimator"):
+        cfg.observations[group].terms.pop("phase", None)
+
     # Respect the HIM task's delay-free estimator observations and dimensions.
     if play:
         cfg.scene.num_envs = 1
