@@ -16,6 +16,7 @@ from nazarite.config.train_config.env_cfgs.wmp_him_go2_env_cfg import (
   Nazarite_WMP_HIM_Complex_Terrain_Go2,
 )
 from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
+from nazarite.rl.wmp.runner import WMPHIMOnPolicyRunner
 
 from mjlab.envs import ManagerBasedRlEnv
 
@@ -81,6 +82,12 @@ def test_stage_steps_and_every_term_evaluates(flat: bool) -> None:
     assert (
       sum(b - a for a, b in runner_cfg.algorithm.estimator_target_slices) == one_step
     )
+
+    # The world model's proprioception is sliced out of the estimator group by
+    # position, so it has to agree with that group's width. This is the pair that
+    # broke when the gait clock left: the slice still assumed a clock at 9:11.
+    prop = WMPHIMOnPolicyRunner._prop_from_estimator(torch.zeros(2, estimator_width))
+    assert prop.shape == (2, 33)
   finally:
     env.close()
 

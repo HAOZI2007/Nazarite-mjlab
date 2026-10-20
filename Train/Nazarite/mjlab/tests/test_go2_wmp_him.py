@@ -552,7 +552,8 @@ def test_inference_policy_without_explicit_depth_normalizes_camera_once():
   )
 
   policy = runner.get_inference_policy()
-  obs = TensorDict({"estimator": torch.zeros(2, 50)}, batch_size=[2])
+  # 48, not 50: the gait clock is gone, so the estimator group lost two dims.
+  obs = TensorDict({"estimator": torch.zeros(2, 48)}, batch_size=[2])
   actions = policy(obs)
 
   torch.testing.assert_close(captured["image"], torch.zeros_like(raw_depth))

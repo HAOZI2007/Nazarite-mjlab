@@ -90,12 +90,15 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
 
     @staticmethod
     def _prop_from_estimator(estimator_obs: torch.Tensor) -> torch.Tensor:
-        if estimator_obs.ndim != 2 or estimator_obs.shape[-1] != 50:
+        if estimator_obs.ndim != 2 or estimator_obs.shape[-1] != 48:
             raise ValueError(
-                f"Expected Go2 HIM estimator input [N, 50], got {tuple(estimator_obs.shape)}"
+                f"Expected Go2 HIM estimator input [N, 48], got {tuple(estimator_obs.shape)}"
             )
-        # [gyro, gravity, command, phase, joint position, joint velocity, action, true velocity]
-        return torch.cat((estimator_obs[:, :9], estimator_obs[:, 11:35]), dim=-1)
+        # [gyro, gravity, command, joint position, joint velocity, action, true velocity]
+        # The world model is fed everything except the action and the true
+        # velocity: 9 + 12 + 12. The gait clock used to sit at 9:11, which is why
+        # the joint block starts at 9 rather than 11.
+        return torch.cat((estimator_obs[:, :9], estimator_obs[:, 9:33]), dim=-1)
 
     def _camera_depth(self) -> torch.Tensor:
         """Read raw camera depth in metres."""
