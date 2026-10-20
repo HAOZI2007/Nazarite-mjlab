@@ -56,13 +56,11 @@ def test_wmp_task_has_camera_feature_group_and_expected_reward_weights():
   assert cfg.observations["actor"].history_length == 6
   assert cfg.rewards["track_linear_velocity"].weight == 1.5
   assert cfg.rewards["track_angular_velocity"].weight == 0.5
-  # A one-off air-time bonus is scaled by dt exactly once, so 1.0 was worth 0.003
-  # per step and could not teach a foot to leave the ground. The window form also
-  # charges a swing that is too short, which the one-sided term did not.
-  assert cfg.rewards["feet_air_time"].weight == 3.0
-  assert cfg.rewards["feet_air_time"].func.__name__ == "feet_air_time_band"
-  assert cfg.rewards["feet_air_time"].params["threshold_min"] == 0.22
-  assert cfg.rewards["feet_air_time"].params["threshold_max"] == 0.55
+  # The reference's plain single-sided 0.5 s threshold at 0.5 weight: with a
+  # 0.6 s gait period it pays for a real leap, not for swing timing.
+  assert cfg.rewards["feet_air_time"].weight == 0.5
+  assert cfg.rewards["feet_air_time"].func.__name__ == "feet_air_time"
+  assert cfg.rewards["feet_air_time"].params["threshold"] == 0.5
   assert cfg.rewards["feet_edge"].weight == -1.0
   assert cfg.rewards["track_linear_velocity"].params["terrain_names"] == (
     "gap",
@@ -102,88 +100,51 @@ def test_wmp_task_has_camera_feature_group_and_expected_reward_weights():
   assert play_edge.params["curriculum_start_iteration"] is None
 
 
-def test_wmp_task_combines_wmp_and_posture_gait_rewards():
+def test_wmp_task_uses_the_reference_reward_set():
   cfg = Nazarite_WMP_HIM_Complex_Terrain_Go2()
 
-  # Preserve the source WMP task terms and add explicit motion priors to replace
-  # the posture and gait guidance that the removed AMP discriminator supplied.
+  # Aligned with the reference recipe. The manual shaping terms that used to hold
+  # 10-15 % of the budget are gone: measured on 2026-10-19_22-53-44, the four
+  # terms paying for a lifted foot were worth 1.5 % against 17.7 % for staying
+  # smooth. Style is the discriminator's job now.
   assert set(cfg.rewards) == {
     "track_linear_velocity",
     "track_angular_velocity",
     "joint_torques_l2",
     "joint_acc_l2",
     "action_rate_l2",
-    "action_smoothness",
     "leg_collision",
     "joint_pos_limits",
     "joint_velocity_limits",
     "lin_vel_z",
-    "body_orientation_l2",
-    "pose",
-    "body_ang_vel",
-    "angular_momentum",
+    "dof_error",
     "is_terminated",
-    "hip_pos",
-    "foot_gait",
-    "base_clearance",
-    "foot_clearance",
-    "foot_slip",
-    "soft_landing",
     "stand_still",
     "feet_air_time",
     "feet_stumble",
     "feet_edge",
     "cheat",
     "stuck",
-    "course_checkpoint",
   }
-  # Measured: at the 0.6-0.7 rad lean of the 2026-10-18 crawl this term was
-  # worth 2.5e-4 per step against 2.1e-2 for velocity tracking. -0.7 brings a
-  # permanent 35 deg lean to about a third of a perfectly tracked step.
-  assert cfg.rewards["body_orientation_l2"].weight == -0.7
-  assert cfg.rewards["pose"].weight == 0.3
-  assert cfg.rewards["base_clearance"].weight == 0.4
-  assert cfg.rewards["base_clearance"].params["target_height"] == 0.30
-  # Crouching is the only way through the low frame, so it is exempt.
-  assert cfg.rewards["base_clearance"].params["excluded_terrain_names"] == (
-    "low_frame",
-  )
-  assert cfg.rewards["pose"].params["scan_sensor_name"] == "terrain_scan"
-  assert cfg.rewards["pose"].params["terrain_tolerance"] == {
-    r".*_hip_joint": 0.05,
-    r".*_thigh_joint": 0.18,
-    r".*_calf_joint": 0.22,
-  }
-  assert cfg.rewards["body_ang_vel"].weight == -0.05
-  assert cfg.rewards["angular_momentum"].params["sensor_name"] == ("robot/root_angmom")
+  assert cfg.rewards["track_linear_velocity"].weight == 1.5
+  assert cfg.rewards["track_angular_velocity"].weight == 0.5
+  assert cfg.rewards["joint_torques_l2"].weight == -1.0e-4
+  assert cfg.rewards["joint_acc_l2"].weight == -2.5e-7
+  assert cfg.rewards["action_rate_l2"].weight == -0.03
+  assert cfg.rewards["leg_collision"].weight == -1.0
+  assert cfg.rewards["lin_vel_z"].weight == -1.0
+  # Replaces the tolerance-banded posture reward: one smooth basin around the
+  # default stand, so a rear leg held straight back is charged every step.
+  assert cfg.rewards["dof_error"].weight == -0.04
+  assert cfg.rewards["dof_error"].func.__name__ == "dof_error"
+  # The reference's plain single-sided 0.5 s threshold: with a 0.6 s gait period
+  # this pays for a real leap, not for swing timing.
+  assert cfg.rewards["feet_air_time"].weight == 0.5
+  assert cfg.rewards["feet_air_time"].params["threshold"] == 0.5
+  assert cfg.rewards["feet_air_time"].func.__name__ == "feet_air_time"
+  assert cfg.rewards["feet_stumble"].weight == -0.1
+  assert cfg.rewards["feet_edge"].weight == -1.0
   assert cfg.rewards["is_terminated"].weight == -10.0
-  # Tightened from -0.1 so the hind legs cannot splay outward into the trailing
-  # kickstand posture that the crawl gait relies on.
-  assert cfg.rewards["hip_pos"].weight == -0.3
-  assert cfg.rewards["foot_gait"].params["offset"] == [0.0, 0.5, 0.5, 0.0]
-  assert cfg.rewards["foot_gait"].params["sensor_name"] == ("feet_ground_contact")
-  assert cfg.rewards["foot_clearance"].params["height_sensor_name"] == (
-    "feet_terrain_height"
-  )
-  # A dragging foot moves slowly, so the velocity weight alone makes its
-  # shortfall cheap; charging it only in swing puts the price back on the lift.
-  assert cfg.rewards["foot_clearance"].params["swing_only"] is True
-  assert cfg.rewards["foot_clearance"].weight == -0.15
-  assert cfg.rewards["foot_gait"].weight == 0.30
-  assert cfg.rewards["foot_gait"].func.__name__ == "feet_gait_terrain"
-  assert cfg.rewards["foot_gait"].params["soft_terrain_names"] == (
-    "gap",
-    "plum_blossom",
-    "low_frame",
-    "single_beam",
-  )
-  # Dragging is what the run's 0.37 m/s slip velocity looked like; the penalty has
-  # to be able to outbid it.
-  assert cfg.rewards["foot_slip"].weight == -0.10
-  assert cfg.rewards["course_checkpoint"].weight == 30.0
-  assert cfg.rewards["course_checkpoint"].params["min_upright"] == 0.90
-  assert cfg.rewards["course_checkpoint"].params["spacing"] == 0.5
-  assert cfg.rewards["soft_landing"].weight == -1.0e-3
   assert cfg.rewards["stand_still"].weight == -0.5
 
   assert set(cfg.terminations) == {

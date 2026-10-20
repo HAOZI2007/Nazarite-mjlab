@@ -401,8 +401,12 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         history_length=0,
     )
 
-    # Source reward weights are retained. Go2 contact and sparse-terrain terms
-    # use mjlab sensors as the closest equivalent to the source simulator data.
+    # Reward set aligned with the reference recipe. The manual gait-shaping
+    # terms are gone: measured on 2026-10-19_22-53-44, the four terms that paid
+    # for lifting a foot over an obstacle were worth 1.5 % of the reward while the
+    # six smoothness/energy terms were worth 17.7 %. Tuning those knobs changed
+    # the objective by less than the measurement noise. Style is now the
+    # discriminator's job.
     cfg.rewards = {
         "track_linear_velocity": RewardTermCfg(
             func=wmp_rewards.tracking_linear_velocity,
@@ -417,8 +421,7 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         "track_angular_velocity": RewardTermCfg(
             func=wmp_rewards.tracking_angular_velocity,
             # bytedance/WMP tracks yaw at 0.5 against 1.5 for linear velocity.
-            # At parity the two terms made an untrained policy prefer spinning:
-            # yaw error is cheap to fix, so it dominated the gradient.
+            # At parity the two terms made an untrained policy prefer spinning.
             weight=0.5,
             params={
                 "command_name": "twist",
@@ -436,21 +439,12 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
             weight=-2.5e-7,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        # -0.03/-0.01 made these two the largest penalties of the run (-0.20 and
-        # -0.16 per step) while the policy never learned to clear a trench: they
-        # tax exactly the large, fast leg swings that foot placement on a beam or
-        # over a 0.4 m wall requires. Halved, then restored to two thirds: the
-        # fully halved pair stopped opposing the 1.3 rad action noise that the
-        # 2026-10-17_22-32-26 run developed (mean action acceleration 2.54
-        # against 0.97), so the penalty had doubled in raw terms while the weight
-        # had been cut.
-        "action_rate_l2": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.02),
-        "action_smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.008),
+        "action_rate_l2": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.03),
         "leg_collision": RewardTermCfg(
             func=velocity_mdp.illegal_contact,
-            # Two orders below the reference (-1.0). At -0.05 a thigh scraping the
-            # ground cost 0.001 per step, which is why the crouched gait of the
-            # 2026-10-17 runs could drag its shins across the terrain for free.
+            # At -0.05 a thigh scraping the ground cost 0.001 per step, which is
+            # why the crouched gait of the 2026-10-17 runs could drag its shins
+            # across the terrain for free.
             weight=-1.0,
             params={"sensor_name": "leg_ground_contact", "force_threshold": 0.1},
         ),
@@ -466,158 +460,22 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         ),
         "lin_vel_z": RewardTermCfg(
             func=wmp_rewards.lin_vel_z_l2,
-            # Jumping a trench needs vertical base velocity, so this stays below
-            # the -1.0 of the reference recipe -- but -0.5 let the base bob at
-            # will, and the 2026-10-17_22-32-26 run turned that into a hopping
-            # front half over dragging hind legs.
+            # Same as the reference. Leaping needs vertical base velocity, but the
+            # 2026-10-17_22-32-26 run's base bob (0.5 weight) is exactly what this
+            # should charge.
             weight=-1.0,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        "body_orientation_l2": RewardTermCfg(
-            func=custom_rewards.body_orientation_l2,
-            # The measured budget, not a guess: at the observed 0.6-0.7 rad lean
-            # this term was worth 2.5e-4 per step against 2.1e-2 for velocity
-            # tracking, i.e. 1.2 % of the reward, so the crawl paid almost
-            # nothing for its posture. -0.7 brings a permanent 35 deg lean to
-            # ~6e-3 per step, a third of a perfectly tracked step, while a
-            # deliberate 15-20 deg pitch over a wall or up a staircase still
-            # costs under 2e-3.
-            weight=-0.7,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,))},
-        ),
-        "pose": RewardTermCfg(
-            func=custom_rewards.terrain_variable_posture,
-            # 0.1 with 0.45/0.50 rad walking tolerances made a fully extended,
-            # dragging hind leg nearly free. Tighter tolerances and a higher
-            # weight put the crawl's posture on the bill without forbidding the
-            # obstacle-specific postures the terrain branch of this term allows.
-            weight=0.3,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-                "command_name": "twist",
-                "std_standing": {
-                    r".*_hip_joint": 0.05,
-                    r".*_thigh_joint": 0.10,
-                    r".*_calf_joint": 0.15,
-                },
-                "std_walking": {
-                    r".*_hip_joint": 0.15,
-                    r".*_thigh_joint": 0.30,
-                    r".*_calf_joint": 0.35,
-                },
-                "std_running": {
-                    r".*_hip_joint": 0.35,
-                    r".*_thigh_joint": 0.45,
-                    r".*_calf_joint": 0.45,
-                },
-                "walking_threshold": 0.1,
-                "running_threshold": 1.0,
-                "scan_sensor_name": "terrain_scan",
-                "terrain_radius": 0.35,
-                "terrain_height_std": (0.01, 0.04),
-                "terrain_tolerance": {
-                    r".*_hip_joint": 0.05,
-                    r".*_thigh_joint": 0.18,
-                    r".*_calf_joint": 0.22,
-                },
-            },
-        ),
-        "body_ang_vel": RewardTermCfg(
-            func=velocity_mdp.body_angular_velocity_penalty,
-            weight=-0.05,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names=(GO2_BASE_BODY,))},
-        ),
-        "angular_momentum": RewardTermCfg(
-            func=velocity_mdp.angular_momentum_penalty,
-            weight=-0.025,
-            params={"sensor_name": "robot/root_angmom"},
+        "dof_error": RewardTermCfg(
+            func=wmp_rewards.dof_error,
+            # Replaces the tolerance-banded posture reward. A single smooth basin
+            # around the default stand, so a hind leg held straight back (the
+            # crawl's "kickstand") is charged every step instead of only once it
+            # leaves a band.
+            weight=-0.04,
+            params={"asset_cfg": SceneEntityCfg("robot")},
         ),
         "is_terminated": RewardTermCfg(func=envs_mdp.is_terminated, weight=-10.0),
-        "hip_pos": RewardTermCfg(
-            func=custom_rewards.hip_joint_deviation_penalty,
-            weight=-0.3,
-            params={"command_name": "twist"},
-        ),
-        "foot_gait": RewardTermCfg(
-            func=wmp_rewards.feet_gait_terrain,
-            # At 0.02 this was 0.3 % of the reward, and the measured match was
-            # 0.40 -- below the 0.5 of random contacts, i.e. the policy was
-            # anti-matching while paying nothing for it. 0.30 makes a correct
-            # diagonal pair worth ~6e-3 per step (a third of perfect velocity
-            # tracking) and a wrong pair worth 0. It stays *soft* on the tiles
-            # that need an asymmetric, obstacle-specific leg pattern.
-            weight=0.30,
-            params={
-                "period": 0.6,
-                "offset": [0.0, 0.5, 0.5, 0.0],
-                "threshold": 0.56,
-                "command_threshold": 0.1,
-                "command_name": "twist",
-                "sensor_name": "feet_ground_contact",
-                "soft_terrain_names": WMP_SOFT_GAIT_TERRAINS,
-                "soft_scale": 0.3,
-            },
-        ),
-        "base_clearance": RewardTermCfg(
-            # The anti-crawl term. Terrain-relative and one-sided so that ramps,
-            # stairs and the flight phase of a jump are free; the low-clearance
-            # frame tile is exempt because there crouching is the only way
-            # through.
-            func=wmp_rewards.base_clearance_reward,
-            weight=0.4,
-            params={
-                "sensor_name": "wmp_base_clearance",
-                "target_height": 0.30,
-                "std": 0.06,
-                "excluded_terrain_names": WMP_LOW_CEILING_TERRAINS,
-            },
-        ),
-        "foot_clearance": RewardTermCfg(
-            # One-sided shortfall penalty: raising the foot above the target is
-            # free, because on this course it is usually the answer.
-            func=wmp_rewards.foot_clearance_terrain,
-            # -0.04 cost 0.0086 per step, an order of magnitude less than the
-            # drag it was supposed to remove. At a 0.12 m flat target a dragging
-            # foot at 0.3 m/s now costs ~7e-4 per step per foot.
-            weight=-0.15,
-            params={
-                "target_height": 0.18,
-                "flat_target_height": 0.12,
-                "height_sensor_name": "feet_terrain_height",
-                "command_name": "twist",
-                "command_threshold": 0.1,
-                "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES),
-                "obstacle_terrain_names": WMP_OBSTACLE_TERRAINS,
-                # A dragging foot moves slowly, so the velocity weight alone
-                # makes its shortfall cheap. Charging the shortfall only in the
-                # swing phase puts the price back on the lift itself.
-                "swing_only": True,
-                "contact_sensor_name": "feet_ground_contact",
-            },
-        ),
-        "foot_slip": RewardTermCfg(
-            func=velocity_mdp.feet_slip,
-            # Contact slip velocity is the measurement that separates a step from
-            # a drag: 0.11 m/s in the good run, 0.37 m/s once the hind feet never
-            # left the ground. Doubled so that dragging is no longer the cheap way
-            # to move.
-            weight=-0.10,
-            params={
-                "sensor_name": "feet_ground_contact",
-                "command_name": "twist",
-                "command_threshold": 0.1,
-                "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES),
-            },
-        ),
-        "soft_landing": RewardTermCfg(
-            func=velocity_mdp.soft_landing,
-            weight=-1.0e-3,
-            params={
-                "sensor_name": "feet_ground_contact",
-                "command_name": "twist",
-                "command_threshold": 0.1,
-            },
-        ),
         "stand_still": RewardTermCfg(
             func=custom_rewards.stand_still,
             weight=-0.5,
@@ -628,31 +486,22 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
             },
         ),
         "feet_air_time": RewardTermCfg(
-            func=wmp_rewards.feet_air_time_band,
-            # A one-off bonus is multiplied by dt (0.02) exactly once, so weight
-            # 1.0 was worth 0.003 per step: invisible. The window form also
-            # charges a swing that is *too short*, which the one-sided term did
-            # not: the front-leg skitter of the 2026-10-18 run paid exactly
-            # nothing rather than a penalty.
-            weight=3.0,
+            func=wmp_rewards.feet_air_time,
+            # The reference's plain 0.5 s threshold, single-sided. With the gait
+            # period at 0.6 s this pays only for a real leap (>0.5 s of air),
+            # which is what a trench crossing needs; swing timing is the
+            # discriminator's business now.
+            weight=0.5,
             params={
                 "sensor_name": "feet_ground_contact",
-                # The gait period is 0.6 s with a 0.56 stance fraction, so a
-                # perfectly phased trot swings for 0.26 s. A 0.28 s floor taxed
-                # every correct swing: the 2026-10-18_17-11-36 flat run sat at
-                # -0.05 on this term for its whole length. 0.22 still charges
-                # the front-leg skitter, which is well under 0.15 s.
-                "threshold_min": 0.22,
-                "threshold_max": 0.55,
+                "threshold": 0.5,
                 "command_name": "twist",
                 "command_threshold": 0.1,
-                "obstacle_terrain_names": WMP_OBSTACLE_TERRAINS,
-                "obstacle_scale": 1.5,
             },
         ),
         "feet_stumble": RewardTermCfg(
             func=wmp_rewards.feet_stumble,
-            weight=-1.0,
+            weight=-0.1,
             params={"sensor_name": "feet_ground_contact", "horizontal_ratio": 4.0},
         ),
         "feet_edge": RewardTermCfg(
@@ -687,28 +536,6 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
                 "command_name": "twist",
                 "speed_threshold": 0.12,
                 "grace_steps": 25,
-            },
-        ),
-        "course_checkpoint": RewardTermCfg(
-            # Paid once per 0.5 m of forward progress, and only while the base is
-            # upright. Without it every tile the robot cannot cross is locally
-            # optimal to stand in front of: the tracking term is saturated at zero
-            # there while the penalties keep accruing. Weight 100 paid 2.0 of
-            # return per metre, 2.4x the largest tracking term, and the policy
-            # collected it with a controlled fall instead of a gait: in the
-            # 2026-10-17_22-32-26 run it was worth 0.55 per step against 0.53 for
-            # velocity tracking while every shaping term summed to -0.30. 30 pays
-            # 0.6 per metre in 0.3 chunks, and the upright gate removes the
-            # incentive to spend the episode falling forward.
-            func=wmp_rewards.course_checkpoint_bonus,
-            weight=30.0,
-            params={
-                "asset_cfg": SceneEntityCfg("robot"),
-                "command_name": "twist",
-                "terrain_names": WMP_FORWARD_TERRAIN_NAMES,
-                "spacing": 0.5,
-                "max_checkpoints": 16,
-                "min_upright": 0.90,
             },
         ),
     }

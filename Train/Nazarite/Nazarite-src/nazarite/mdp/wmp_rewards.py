@@ -86,6 +86,25 @@ def joint_velocity_limits(
     return excess.sum(dim=1)
 
 
+def dof_error(
+    env,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Squared joint deviation from the default stand.
+
+    The reference recipe uses this instead of a tolerance-banded posture reward:
+    it is a single smooth basin around the default pose, so a leg held straight
+    back (the crawl's rear "kickstand") is charged continuously rather than only
+    once it leaves a band.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    default = asset.data.default_joint_pos
+    assert default is not None
+    joint_ids = asset_cfg.joint_ids
+    deviation = asset.data.joint_pos[:, joint_ids] - default[:, joint_ids]
+    return torch.sum(torch.square(deviation), dim=1)
+
+
 def feet_air_time(
     env,
     sensor_name: str = "feet_ground_contact",
