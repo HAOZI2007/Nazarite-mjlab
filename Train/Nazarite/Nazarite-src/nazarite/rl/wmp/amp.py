@@ -102,9 +102,18 @@ class AdversarialMotionPrior:
         self.normalizer = AMPStateNormalizer(AMP_OBSERVATION_DIM, device=self.device)
         self.normalizer.update(self.dataset.all_states())
 
-        self.discriminator = AMPDiscriminator(
-            AMP_OBSERVATION_DIM, tuple(hidden_dims)
-        ).to(self.device)
+        # ``seed`` has to govern the weights as well as the sampling, otherwise
+        # a run is only reproducible if nothing else touched the global RNG
+        # first. Tests caught this as an order-dependent discriminator.
+        global_rng = torch.random.get_rng_state()
+        try:
+            if seed is not None:
+                torch.manual_seed(int(seed))
+            self.discriminator = AMPDiscriminator(
+                AMP_OBSERVATION_DIM, tuple(hidden_dims)
+            ).to(self.device)
+        finally:
+            torch.random.set_rng_state(global_rng)
         self.optimizer = torch.optim.Adam(
             self.discriminator.parameters(), lr=float(learning_rate)
         )
@@ -116,11 +125,13 @@ class AdversarialMotionPrior:
     def style_reward(
         self, states: torch.Tensor, next_states: torch.Tensor
     ) -> torch.Tensor:
-        """Per-environment style reward in the discriminator's own scale.
+        """Per-environment style reward, already in per-step return units.
 
-        The caller multiplies by ``step_dt`` to match the reward manager's
-        ``scale_rewards_by_dt`` convention, so this number stays comparable with
-        a reward weight rather than a per-step return.
+        The reward manager folds ``step_dt`` into every task term before this is
+        added, and the reference adds its style reward the same way, so the
+        value is used as-is. Multiplying by ``step_dt`` again would divide it by
+        fifty and bury it under the task terms -- which is exactly what the
+        2026-10-20 run did before the weights were realigned.
         """
         with torch.inference_mode():
             score = self.discriminator(

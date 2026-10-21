@@ -135,7 +135,9 @@ def gait_hind_swing_ratio(
     if contact is None:
         return torch.zeros(env.num_envs, device=env.device)
     hind = contact.float()[:, list(hind_indices)]
-    return 1.0 - hind.mean(dim=1)
+    value = 1.0 - hind.mean(dim=1)
+    _accumulate(env, "_wmp_hind_swing", value)
+    return value
 
 
 def gait_front_hind_swing_gap(

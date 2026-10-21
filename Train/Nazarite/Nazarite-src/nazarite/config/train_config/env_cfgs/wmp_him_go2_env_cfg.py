@@ -110,7 +110,18 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
                     # Promote on distance *and* on a walkable gait: distance
                     # alone let the 2026-10-18 run reach level 4.9 with a
                     # nose-down crawl that crossed seven of the nine families.
-                    "min_gait_match": 0.62,
+                    #
+                    # The diagonal match is off (0.0) rather than 0.62. It is
+                    # measured against a 0.6 s phase clock, so it can only pass
+                    # while the reward set carries a matching phase term; with
+                    # the AMP reward set the style is free, and the 2026-10-20
+                    # complex run measured 0.44 for 4500 iterations against that
+                    # floor, so it never promoted once while its episodes walked
+                    # seven metres. Hind swing rejects a dragging leg without
+                    # assuming any gait: 0.13 was the crawl, 0.38 the stage one
+                    # run, 0.44 is half a cycle.
+                    "min_gait_match": 0.0,
+                    "min_hind_swing": 0.25,
                     "max_gait_tilt": 0.35,
                     "min_base_clearance": 0.25,
                     "crouch_terrain_names": WMP_LOW_CEILING_TERRAINS,

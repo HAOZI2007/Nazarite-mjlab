@@ -543,7 +543,8 @@ def test_gait_gate_blocks_promotion_for_a_crawling_episode():
     positions,
     terrain_types,
     {
-      "_wmp_gait_match": (0.40, 50),  # below the 0.5 of random contacts
+      # A dragging hind leg, as measured on the 2026-10-18 crawl.
+      "_wmp_hind_swing": (0.13, 50),
       "_wmp_gait_tilt": (0.62, 50),
       "_wmp_gait_clearance": (0.30, 50),
     },
@@ -551,19 +552,50 @@ def test_gait_gate_blocks_promotion_for_a_crawling_episode():
   terrain_levels_wmp_reference(env, ids, "twist")
   assert not terrain.updates[1].any()
   # The gate consumed the accumulators so the next episode starts clean.
-  assert (env._wmp_gait_match["count"] == 0).all()
+  assert (env._wmp_hind_swing["count"] == 0).all()
 
   env, terrain = _gate_env(
     positions,
     terrain_types,
     {
-      "_wmp_gait_match": (0.80, 50),
+      # Half a cycle in swing, level trunk, normal clearance.
+      "_wmp_hind_swing": (0.38, 50),
       "_wmp_gait_tilt": (0.20, 50),
       "_wmp_gait_clearance": (0.30, 50),
     },
   )
   terrain_levels_wmp_reference(env, ids, "twist")
   assert terrain.updates[1].all()
+
+
+def test_gait_gate_opens_when_a_dragging_leg_is_the_only_problem():
+  """Hind swing alone rejects a drag; the tilt and clearance must not double up."""
+  positions = [[6.3, 0.0, 0.0]] * 2
+  env, terrain = _gate_env(
+    positions,
+    torch.tensor([4, 0]),
+    {
+      "_wmp_hind_swing": (0.10, 50),
+      "_wmp_gait_tilt": (0.10, 50),
+      "_wmp_gait_clearance": (0.32, 50),
+    },
+  )
+  terrain_levels_wmp_reference(env, torch.arange(2), "twist")
+  assert not terrain.updates[1].any()
+
+
+def test_the_diagonal_match_floor_is_off_in_the_shipped_config():
+  """The 0.62 floor froze the 2026-10-20 run: back it off unless a phase term is.
+
+  The match is measured against a 0.6 s phase clock, and the reference reward
+  set leaves the style to the discriminator without pinning a period. The run
+  measured 0.44 for 4500 iterations against the old floor and never promoted,
+  while its episodes were already walking seven metres.
+  """
+  cfg = Nazarite_WMP_HIM_Complex_Terrain_Go2(flat=False)
+  term = cfg.curriculum["terrain_levels"]
+  assert term.params["min_gait_match"] == 0.0
+  assert term.params["min_hind_swing"] == 0.25
 
 
 def test_gait_gate_waives_base_clearance_on_the_low_ceiling_tile():

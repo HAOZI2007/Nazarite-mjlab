@@ -21,7 +21,8 @@ def terrain_levels_wmp_reference(
     min_progress_fraction: float = 0.75,
     command_progress_fraction: float = 0.25,
     gait_gate: bool = True,
-    min_gait_match: float = 0.62,
+    min_gait_match: float = 0.0,
+    min_hind_swing: float = 0.25,
     max_gait_tilt: float = 0.35,
     min_base_clearance: float = 0.25,
     crouch_terrain_names: tuple[str, ...] = ("low_frame",),
@@ -55,7 +56,16 @@ def terrain_levels_wmp_reference(
         ~1.9.
       gait_gate: Require a walkable gait, not only distance, before promoting.
       min_gait_match: Lower bound on the diagonal contact match, where 0.5 is
-        what random contacts produce.
+        what random contacts produce. Off by default: the match is measured
+        against a 0.6 s phase clock, so it only means anything while the reward
+        set carries a phase term of the same period. With the reference reward
+        set the style is learned by the discriminator and nothing pins the
+        period; the 2026-10-20 complex run then measured 0.44 for 4500
+        iterations against the old 0.62 floor and never promoted once.
+      min_hind_swing: Lower bound on the fraction of time the hind feet spend in
+        swing, which rejects a leg that never leaves the ground without assuming
+        any particular gait. A dragging leg sits near 0.13, the 2026-10-20 stage
+        one run held 0.38, and half of a cycle is 0.44.
       max_gait_tilt: Upper bound on the total base tilt in radians. 0.35 rad is
         20 deg, above the 15-20 deg a staircase or a 20 deg ramp needs and well
         below the 0.6 rad of the nose-down crawl it is meant to reject.
@@ -107,6 +117,7 @@ def terrain_levels_wmp_reference(
             terrain,
             generator,
             min_gait_match=min_gait_match,
+            min_hind_swing=min_hind_swing,
             max_gait_tilt=max_gait_tilt,
             min_base_clearance=min_base_clearance,
             crouch_terrain_names=crouch_terrain_names,
@@ -151,7 +162,8 @@ def _gait_gate(
     env_ids: torch.Tensor,
     terrain,
     generator,
-    min_gait_match: float = 0.62,
+    min_gait_match: float = 0.0,
+    min_hind_swing: float = 0.25,
     max_gait_tilt: float = 0.35,
     min_base_clearance: float = 0.25,
     crouch_terrain_names: tuple[str, ...] = ("low_frame",),
@@ -169,9 +181,14 @@ def _gait_gate(
     open rather than silently freezing the curriculum.
     """
     passed = torch.ones(len(env_ids), dtype=torch.bool, device=env.device)
-    match = episode_average(env, "_wmp_gait_match", env_ids)
-    if match is not None:
-        passed = passed & (match >= float(min_gait_match))
+    if float(min_gait_match) > 0.0:
+        match = episode_average(env, "_wmp_gait_match", env_ids)
+        if match is not None:
+            passed = passed & (match >= float(min_gait_match))
+    if float(min_hind_swing) > 0.0:
+        hind_swing = episode_average(env, "_wmp_hind_swing", env_ids)
+        if hind_swing is not None:
+            passed = passed & (hind_swing >= float(min_hind_swing))
     tilt = episode_average(env, "_wmp_gait_tilt", env_ids)
     if tilt is not None:
         passed = passed & (tilt <= float(max_gait_tilt))
