@@ -64,6 +64,17 @@ WMP_CHEAT_TERRAINS = (
 # Tiles with a ceiling low enough that crouching is mandatory: the beam of the
 # low frame sits at 0.42-0.60 m while the standing Go2 is about 0.44 m tall.
 WMP_LOW_CEILING_TERRAINS = ("low_frame",)
+# Families whose obstacles have to be stepped over or onto, so a foot lift is
+# what makes progress: everything except the ramp, which is a surface.
+WMP_STEP_OVER_TERRAINS = (
+    "stairs",
+    "low_frame",
+    "high_wall",
+    "plum_blossom",
+    "gap",
+    "tire_array",
+    "single_beam",
+)
 
 
 def Nazarite_WMP_HIM_Complex_Terrain_Go2(
@@ -530,8 +541,48 @@ def Nazarite_WMP_HIM_Complex_Terrain_Go2(
         ),
         "feet_stumble": RewardTermCfg(
             func=wmp_rewards.feet_stumble,
-            weight=-0.1,
-            params={"sensor_name": "feet_ground_contact", "horizontal_ratio": 4.0},
+            weight=-0.5,
+            params={"sensor_name": "feet_ground_contact", "horizontal_ratio": 2.0},
+        ),
+        # The reference reward set has no clearance term because its course never
+        # asks a foot to go over anything: it leaps pits and walks surfaces. Ours
+        # has 14 cm risers and 10 cm walls, and without a term that pays for the
+        # lift the policy stalls at the first obstacle: rolling out one env per
+        # family at level 1, every family covered 0.7-2.1 m of the 3.0 m a clean
+        # 0.5 m/s walk would cover in the same time, and tire_array stood still.
+        "foot_clearance": RewardTermCfg(
+            func=wmp_rewards.foot_clearance_terrain,
+            weight=-0.15,
+            params={
+                "target_height": 0.20,
+                "flat_target_height": 0.10,
+                "height_sensor_name": "feet_terrain_height",
+                "command_name": "twist",
+                "command_threshold": 0.1,
+                "obstacle_terrain_names": WMP_STEP_OVER_TERRAINS,
+                # Only the swing phase is charged: a stance foot is not asked to
+                # be at a height, and charging it is what made the old term tax
+                # every normal step.
+                "swing_only": True,
+                "contact_sensor_name": "feet_ground_contact",
+                # The robot entity carries a fifth site (the base), so the site
+                # selection has to be explicit or the velocity term comes back
+                # with five columns against four foot heights.
+                "asset_cfg": SceneEntityCfg("robot", site_names=GO2_FOOT_SITES),
+            },
+        ),
+        # Keep the trunk up so the walls are cleared from above rather than by
+        # crouching under them. The low frame is exempt: there, crouching is the
+        # only way through.
+        "base_clearance": RewardTermCfg(
+            func=wmp_rewards.base_clearance_reward,
+            weight=0.3,
+            params={
+                "sensor_name": "wmp_base_clearance",
+                "target_height": 0.30,
+                "std": 0.06,
+                "excluded_terrain_names": WMP_LOW_CEILING_TERRAINS,
+            },
         ),
         "feet_edge": RewardTermCfg(
             func=wmp_rewards.feet_edge,

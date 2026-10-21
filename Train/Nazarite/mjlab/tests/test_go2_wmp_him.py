@@ -142,6 +142,12 @@ def test_wmp_task_uses_the_reference_reward_set():
     "stand_still",
     "feet_air_time",
     "feet_stumble",
+    # The reference recipe has no clearance term because its course never asks a
+    # foot to go over anything. Ours has risers and walls, and without these two
+    # the policy stalls at the first obstacle (measured at level 1: every family
+    # covered 0.7-2.1 m of the 3.0 m a clean walk would cover).
+    "foot_clearance",
+    "base_clearance",
     "feet_edge",
     "cheat",
     "stuck",
@@ -162,7 +168,21 @@ def test_wmp_task_uses_the_reference_reward_set():
   assert cfg.rewards["feet_air_time"].weight == 0.5
   assert cfg.rewards["feet_air_time"].params["threshold"] == 0.5
   assert cfg.rewards["feet_air_time"].func.__name__ == "feet_air_time"
-  assert cfg.rewards["feet_stumble"].weight == -0.1
+  assert cfg.rewards["feet_stumble"].weight == -0.5
+  assert cfg.rewards["feet_stumble"].params["horizontal_ratio"] == 2.0
+  # A foot asked to clear a 14 cm riser needs roughly 0.20 m under the sole; the
+  # flat target stays low so plain walking is not taxed.
+  clearance = cfg.rewards["foot_clearance"]
+  assert clearance.weight == -0.15
+  assert clearance.func.__name__ == "foot_clearance_terrain"
+  assert clearance.params["target_height"] == 0.20
+  assert clearance.params["flat_target_height"] == 0.10
+  assert clearance.params["swing_only"] is True
+  assert clearance.params["asset_cfg"].site_names == ("FL", "FR", "RL", "RR")
+  trunk = cfg.rewards["base_clearance"]
+  assert trunk.weight == 0.3
+  assert trunk.func.__name__ == "base_clearance_reward"
+  assert trunk.params["excluded_terrain_names"] == ("low_frame",)
   assert cfg.rewards["feet_edge"].weight == -1.0
   assert cfg.rewards["is_terminated"].weight == -10.0
   assert cfg.rewards["stand_still"].weight == -0.5

@@ -134,7 +134,10 @@ def gait_hind_swing_ratio(
         return torch.zeros(env.num_envs, device=env.device)
     if contact is None:
         return torch.zeros(env.num_envs, device=env.device)
-    hind = contact.float()[:, list(hind_indices)]
+    # ``found`` counts matched contacts, and a Go2 foot has several collision
+    # geoms, so the raw count can exceed one and drive this ratio negative. Only
+    # "any contact" matters for a swing ratio.
+    hind = (contact > 0).float()[:, list(hind_indices)]
     value = 1.0 - hind.mean(dim=1)
     _accumulate(env, "_wmp_hind_swing", value)
     return value
