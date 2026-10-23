@@ -8,6 +8,36 @@ from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 
+def sustained_base_contact(
+    env,
+    sensor_name: str = "base_ground_contact",
+    force_threshold: float = 5.0,
+    min_loaded_steps: int = 10,
+) -> torch.Tensor:
+    """Terminate once the trunk has been carrying terrain load for a while.
+
+    A belly slide drags the trunk across box edges, so the contact chatters:
+    single substeps drop below the threshold and come back.  Requiring one
+    unbroken run of loaded substeps would then never fire, which is why this
+    counts loaded substeps inside the sensor's history window instead.  With
+    the shipped 2 ms physics step and a 25 substep history, ten loaded substeps
+    is 20 ms of trunk load: long enough to exclude a stumble that presses the
+    body against a step for a single substep, short enough to end the episode
+    before a fallen robot learns to crawl on its belly.
+    """
+    sensor = env.scene[sensor_name]
+    history = sensor.data.force_history
+    if history is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    loaded = torch.linalg.vector_norm(history, dim=-1) > max(float(force_threshold), 0.0)
+    # [B, N, H] -> any primary body contact counts as trunk load.
+    loaded = loaded.any(dim=1)
+    result = loaded.sum(dim=-1) >= max(int(min_loaded_steps), 1)
+    if hasattr(env, "extras") and "log" in env.extras:
+        env.extras["log"][f"Metrics/{sensor_name}_loaded_fraction"] = loaded.float().mean()
+    return result
+
+
 def fell_from_single_bridge(
     env,
     terrain_name: str = "single_bridge",

@@ -80,6 +80,7 @@ def terrain_levels_delta(
     sparse_success_streak_length: int = 3,
     sparse_failure_streak_length: int = 4,
     sparse_max_level: int | None = None,
+    flat_terrain_name: str = "",
     high_wall_terrain_name: str = "high_wall",
     high_wall_crossing_clearance: float = 0.4,
     tire_array_terrain_name: str = "tire_array",
@@ -97,6 +98,10 @@ def terrain_levels_delta(
     terrains use the normal two-success/three-failure rule. Sparse terrains use
     a shorter early success distance and a conservative level cap until the
     residual policy demonstrates repeatable traversals.
+
+    Flat tiles are excluded from promotion and demotion.  Distance travelled
+    on flat ground says nothing about obstacle capability, yet counting it as
+    success lets the mean level climb while the sparse terrains stay impossible.
     """
     if success_streak_length < 1 or failure_streak_length < 1:
         raise ValueError("Curriculum streak lengths must be positive.")
@@ -231,7 +236,14 @@ def terrain_levels_delta(
             active & ~terminated & crossed_tire_array,
             success,
         )
+    success_for_stats = success
+    exclude_flat = bool(flat_terrain_name) and flat_terrain_name in terrain_names
+    if exclude_flat:
+        flat = terrain.terrain_types[env_ids] == terrain_names.index(flat_terrain_name)
+        success = success & ~flat
     failure = active & ~success
+    if exclude_flat:
+        failure = failure & ~flat
     old_types = terrain.terrain_types[env_ids].clone()
 
     type_success_ema = getattr(env, "_delta_type_success_ema", None)
@@ -250,7 +262,7 @@ def terrain_levels_delta(
     for terrain_index in range(num_terrain_types):
         type_mask = (old_types == terrain_index) & active
         if type_mask.any():
-            batch_success = success[type_mask].float().mean()
+            batch_success = success_for_stats[type_mask].float().mean()
             type_success_ema[terrain_index] = (1.0 - ema_alpha) * type_success_ema[
                 terrain_index
             ] + ema_alpha * batch_success

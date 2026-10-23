@@ -166,3 +166,57 @@ def test_tire_curriculum_requires_root_center_to_clear_last_tire_row() -> None:
   )
 
   assert torch.equal(terrain.terrain_levels, torch.tensor([0, 0, 1]))
+
+
+def test_flat_tiles_neither_promote_nor_demote_the_curriculum() -> None:
+  num_envs = 4
+  terrain = SimpleNamespace(
+    terrain_levels=torch.tensor([5, 5, 5, 5]),
+    # Envs 0 and 2 sit on flat ground, envs 1 and 3 on a stair patch.
+    terrain_types=torch.tensor([0, 1, 0, 1]),
+    terrain_origins=torch.zeros(10, 2, 3),
+    env_origins=torch.zeros(num_envs, 3),
+    max_terrain_level=10,
+    cfg=SimpleNamespace(
+      terrain_generator=SimpleNamespace(
+        size=(8.0, 8.0),
+        sub_terrains={
+          "flat": SimpleNamespace(proportion=0.5),
+          "pyramid_stairs": SimpleNamespace(proportion=0.5),
+        },
+      )
+    ),
+  )
+  root_pos = torch.zeros(num_envs, 3)
+  # Envs 0 and 1 clear the success distance, envs 2 and 3 make no progress.
+  root_pos[:, 0] = torch.tensor([5.0, 5.0, 0.0, 0.0])
+  env = SimpleNamespace(
+    num_envs=num_envs,
+    device="cpu",
+    scene=_Scene(robot=SimpleNamespace(data=SimpleNamespace(root_link_pos_w=root_pos))),
+    common_step_counter=1,
+    max_episode_length_s=10.0,
+    reset_terminated=torch.zeros(num_envs, dtype=torch.bool),
+    command_manager=SimpleNamespace(
+      get_command=lambda _name: torch.tensor([[1.0, 0.0, 0.0]]).repeat(num_envs, 1)
+    ),
+  )
+  env.scene.terrain = terrain
+  env.scene.env_origins = torch.zeros(num_envs, 3)
+
+  result = terrain_levels_delta(
+    env,
+    torch.arange(num_envs),
+    command_name="twist",
+    success_distance_scale=0.5,
+    min_success_distance=0.5,
+    max_success_distance=1.0,
+    success_streak_length=1,
+    failure_streak_length=1,
+    flat_terrain_name="flat",
+  )
+
+  # Stairs promote on success and demote on failure; flat tiles stay put.
+  assert torch.equal(terrain.terrain_levels, torch.tensor([5, 6, 5, 4]))
+  # Flat success still feeds the per-type statistics used by adaptive sampling.
+  assert result["flat_success_ema"] > 0.0

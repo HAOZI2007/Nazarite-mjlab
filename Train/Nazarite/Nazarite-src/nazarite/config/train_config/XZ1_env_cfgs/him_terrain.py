@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import mujoco
@@ -20,6 +21,68 @@ def _floor(body, size: tuple[float, float]):
         size=(size[0] / 2, size[1] / 2, 0.025),
         pos=(size[0] / 2, size[1] / 2, -0.025),
     )
+
+
+_RAMP = (0.72, 0.52, 0.24, 1.0)
+_FLOOR = (0.28, 0.28, 0.30, 1.0)
+
+
+def _interpolate(difficulty: float, bounds: tuple[float, float]) -> float:
+    """Linearly interpolate ``bounds`` with a clamped difficulty in [0, 1]."""
+    low, high = bounds
+    return low + min(max(float(difficulty), 0.0), 1.0) * (high - low)
+
+
+def _ramp_prism(
+    spec: mujoco.MjSpec,
+    body,
+    x_points: tuple[float, float, float, float],
+    y_bounds: tuple[float, float],
+    height: float,
+    rng: np.random.Generator,
+) -> TerrainGeometry:
+    """Create a closed ascent-deck-descent prism with solid collision volume.
+
+    The eight vertices describe a convex trapezoid in the x-z plane, extruded
+    along y. MuJoCo uses the convex hull for collision, so the collision volume
+    is the same solid wedge the renderer draws; there is no hollow interior the
+    legs could clip into.
+    """
+    x0, x1, x2, x3 = x_points
+    y0, y1 = y_bounds
+    vertices = np.asarray(
+        (
+            (x0, y0, 0.0),
+            (x0, y1, 0.0),
+            (x1, y0, height),
+            (x1, y1, height),
+            (x2, y0, height),
+            (x2, y1, height),
+            (x3, y0, 0.0),
+            (x3, y1, 0.0),
+        ),
+        dtype=np.float64,
+    )
+    # Both end points meet the floor, so no zero-area vertical end faces.
+    faces = (
+        0, 6, 4, 0, 4, 2,  # -y side
+        1, 3, 5, 1, 5, 7,  # +y side
+        0, 1, 7, 0, 7, 6,  # bottom
+        0, 2, 3, 0, 3, 1,  # ascent
+        2, 4, 5, 2, 5, 3,  # summit deck
+        4, 6, 7, 4, 7, 5,  # descent
+    )
+    mesh = spec.add_mesh(
+        name=f"xz1_ramp_{rng.integers(int(1e9))}",
+        uservert=vertices.ravel().tolist(),
+        userface=list(faces),
+    )
+    geom = body.add_geom(
+        type=mujoco.mjtGeom.mjGEOM_MESH,
+        meshname=mesh.name,
+    )
+    geom.rgba = _RAMP
+    return TerrainGeometry(geom=geom, color=_RAMP)
 
 
 def _tire_mesh(
@@ -169,4 +232,59 @@ class BoxHighWallTerrainCfg(SubTerrainCfg):
         return TerrainOutput(origin=origin, geometries=geometries)
 
 
-__all__ = ["BoxHighWallTerrainCfg", "BoxTireArrayTerrainCfg"]
+@dataclass(kw_only=True)
+class BoxTrapezoidRampTerrainCfg(SubTerrainCfg):
+    """A solid trapezoidal ramp spanning the complete terrain width.
+
+    The wedge rises from the floor, holds a flat summit deck and descends on
+    the far side, so its x-z cross-section is a closed trapezoid. The ramp is
+    full width in y, so the policy has to climb it instead of walking around
+    either end, and both the ascent and the descent are graded by difficulty.
+    """
+
+    start_x: float = 1.6
+    """Patch x of the first ramp vertex, in meters."""
+    height_range: tuple[float, float] = (0.06, 0.30)
+    """Summit height bound, interpolated by difficulty, in meters."""
+    slope_angle_range: tuple[float, float] = (10.0, 30.0)
+    """Ascent/descent angle bound, interpolated by difficulty, in degrees."""
+    deck_length: float = 0.9
+    """Summit deck length, in meters."""
+    spawn_x_fraction: float = 0.075
+    """Spawn origin x as a fraction of the patch width, leaving run-up room."""
+
+    def function(
+        self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
+    ) -> TerrainOutput:
+        body = spec.body("terrain")
+        floor = _floor(body, self.size)
+        rise = _interpolate(difficulty, self.height_range)
+        angle = math.radians(_interpolate(difficulty, self.slope_angle_range))
+        run = rise / math.tan(angle)
+        x0 = self.start_x
+        x1 = x0 + run
+        x2 = x1 + self.deck_length
+        x3 = x2 + run
+        if x3 > self.size[0] - 0.25:
+            raise ValueError(
+                f"A {rise:.2f} m ramp at {math.degrees(angle):.0f} deg needs "
+                f"{x3 - x0:.2f} m, which does not fit in a {self.size[0]} m tile."
+            )
+        prism = _ramp_prism(
+            spec, body, (x0, x1, x2, x3), (0.0, self.size[1]), rise, rng
+        )
+        geometries = [
+            TerrainGeometry(geom=floor, color=_FLOOR),
+            prism,
+        ]
+        if not 0.0 <= self.spawn_x_fraction <= 1.0:
+            raise ValueError("spawn_x_fraction must be in [0, 1].")
+        origin = np.array([self.size[0] * self.spawn_x_fraction, self.size[1] / 2, 0.0])
+        return TerrainOutput(origin=origin, geometries=geometries)
+
+
+__all__ = [
+    "BoxHighWallTerrainCfg",
+    "BoxTireArrayTerrainCfg",
+    "BoxTrapezoidRampTerrainCfg",
+]

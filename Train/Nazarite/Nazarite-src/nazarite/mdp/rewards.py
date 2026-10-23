@@ -524,6 +524,36 @@ def him_track_angular_velocity(
     return _safe_tensor(reward, limit=1.0)
 
 
+def reverse_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Penalize planar velocity that points against the commanded direction.
+
+    The Gaussian tracking reward is convex in the velocity error, so a policy
+    that cannot hold the commanded speed can collect more reward by rocking
+    through the command than by tracking it steadily.  Measured on the XZ1
+    rollout over generated terrain, one environment spent 23.7% of the steps
+    moving backwards at up to 1.48 m/s yet still earned 0.462 tracking reward
+    against 0.180 for steady motion at its own mean speed.  This term prices the
+    retrograde half of that oscillation; it is zero whenever the base moves with
+    the command, and inactive when the command itself is (near) zero.
+    """
+    command = _safe_command(env, command_name)
+    if command is None:
+        return _zero_reward(env)
+    actual = safe_base_lin_vel(env, asset_cfg)
+    planar = actual[:, :2]
+    commanded = command[:, :2]
+    speed = torch.linalg.vector_norm(commanded, dim=1, keepdim=True)
+    direction = commanded / speed.clamp_min(1.0e-6)
+    backward = torch.clamp(-torch.sum(planar * direction, dim=1), min=0.0)
+    active = _command_is_active(command, command_threshold)
+    return _safe_tensor(backward * active, limit=10.0)
+
+
 def current_self_collision_cost(
     env: ManagerBasedRlEnv,
     sensor_name: str,
@@ -552,6 +582,39 @@ def current_self_collision_cost(
     else:
         return _zero_reward(env)
     return hit.reshape(env.num_envs, -1).any(dim=1).to(torch.float32)
+
+
+def sustained_leg_terrain_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    window_length: int = 10,
+) -> torch.Tensor:
+    """Penalize a thigh or shank that keeps touching the terrain.
+
+    Climbing stairs, tires, or walls brushes the legs against the terrain for
+    one or two physics substeps, which is unavoidable and must not be charged.
+    A fault is a leg that stays in contact, e.g. kneeling on a stair edge or
+    dragging a shank through a wall. ``ContactSensor`` stores one force sample
+    per physics substep with index 0 being the newest sample; require every
+    sample in the newest ``window_length`` window to exceed ``force_threshold``
+    and then report the binary any-leg cost that the reference Go2 HIM contact
+    penalty uses, so a single sustained contact keeps the same magnitude.
+
+    ``window_length`` is clamped to the sensor's ``history_length``; set the
+    sensor history to ``decimation * sustained_control_steps`` to express the
+    window in whole control steps.
+    """
+    sensor = _get_contact_sensor(env, sensor_name)
+    if sensor is None:
+        return _zero_reward(env)
+    force_history = sensor.data.force_history
+    if force_history is None:
+        return _zero_reward(env)
+    window = max(1, min(int(window_length), force_history.shape[2]))
+    magnitude = torch.linalg.vector_norm(force_history[:, :, :window, :], dim=-1)
+    sustained = (magnitude > max(float(force_threshold), 0.0)).all(dim=-1)
+    return sustained.reshape(env.num_envs, -1).any(dim=1).to(torch.float32)
 
 
 def him_body_height(
@@ -1632,6 +1695,41 @@ def hip_joint_deviation_penalty(
         & (torch.abs(command[:, 2]) <= command_threshold)
     ).to(cost.dtype)
     return _safe_tensor(cost * active, limit=_SAFE_REWARD_LIMIT)
+
+
+def hip_mirror_symmetry(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    pairs: tuple[tuple[str, str], ...] = (
+        ("FL_hip_joint", "FR_hip_joint"),
+        ("RL_hip_joint", "RR_hip_joint"),
+    ),
+) -> torch.Tensor:
+    """Penalize left/right hip asymmetry (a mirror-symmetric splay is free).
+
+    Borrowed from the UW-HIMLoco dog stack.  The four hip joints share the same
+    ``(1, 0, 0)`` axis, so a mirror-symmetric abduction shows up as opposite
+    signs of the joint deviation: ``|d_left + d_right|`` is zero while the robot
+    splays symmetrically and grows as soon as one side drifts.  Left/right
+    asymmetry is what shows up as a standing roll bias, which the symmetry of
+    the XZ1 asset and the nominal stance rule out as a geometry problem.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    default = asset.data.default_joint_pos
+    if default is None:
+        return _zero_reward(env)
+    joint_ids, joint_names = asset.find_joints(r".*_hip_joint")
+    if joint_ids is None or len(joint_ids) == 0:
+        return _zero_reward(env)
+    index = {name.split("/")[-1]: position for position, name in enumerate(joint_names)}
+    deviation = asset.data.joint_pos[:, joint_ids] - default[:, joint_ids]
+    cost = torch.zeros(env.num_envs, device=env.device, dtype=deviation.dtype)
+    for left, right in pairs:
+        if left in index and right in index:
+            cost = cost + torch.abs(
+                deviation[:, index[left]] + deviation[:, index[right]]
+            )
+    return _safe_tensor(cost, limit=_SAFE_REWARD_LIMIT)
 
 
 def track_linear_velocity_l1(

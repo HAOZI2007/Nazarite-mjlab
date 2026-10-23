@@ -8,11 +8,11 @@ from mjlab.sensor import ContactSensorCfg, ObjRef, TerrainHeightSensorCfg
 from nazarite.config.robot_config.xz1_cfg import (
     XZ1_ACTION_SCALE,
     XZ1_BASE_BODY,
-    XZ1_CALF_BODIES,
     XZ1_FOOT_BODIES,
     XZ1_FOOT_GEOMS,
     XZ1_FOOT_SITES,
     XZ1_HIP_BODIES,
+    XZ1_SHANK_BODIES,
     XZ1_THIGH_BODIES,
     get_xz1_cfg,
 )
@@ -55,7 +55,7 @@ def Nazarite_Velocity_Flat_XZ1_WTW(
             elif sensor.name == "thigh_ground_touch":
                 sensor.primary.pattern = XZ1_THIGH_BODIES
             elif sensor.name == "shank_ground_touch":
-                sensor.primary.pattern = XZ1_CALF_BODIES
+                sensor.primary.pattern = XZ1_SHANK_BODIES
             elif sensor.name == "trunk_ground_touch":
                 sensor.primary.pattern = (XZ1_BASE_BODY,)
         elif (
@@ -71,7 +71,7 @@ def Nazarite_Velocity_Flat_XZ1_WTW(
     cfg.events["base_com"].params["asset_cfg"].body_names = (XZ1_BASE_BODY,)
     cfg.events["base_mass"].params["asset_cfg"].body_names = (XZ1_BASE_BODY,)
     cfg.events["link_mass"].params["asset_cfg"].body_names = (
-        XZ1_HIP_BODIES + XZ1_THIGH_BODIES + XZ1_CALF_BODIES + XZ1_FOOT_BODIES
+        XZ1_HIP_BODIES + XZ1_THIGH_BODIES + XZ1_SHANK_BODIES + XZ1_FOOT_BODIES
     )
 
     # WTW body-height targets are absolute heights. XZ1's nominal standing

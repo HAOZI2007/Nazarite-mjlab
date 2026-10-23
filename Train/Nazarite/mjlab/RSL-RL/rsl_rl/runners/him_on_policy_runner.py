@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
+from collections.abc import Iterator, Mapping
 
 import torch
 from tensordict import TensorDict
@@ -11,6 +13,29 @@ from tensordict import TensorDict
 from rsl_rl.algorithms import HIMPPO
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 from rsl_rl.utils.numerics import TrainingNumericsGuard
+
+
+def _leaf_observations(
+    obs: TensorDict | Mapping, prefix: tuple[str, ...] = ()
+) -> Iterator[tuple[tuple[str, ...], torch.Tensor]]:
+    """Yield ``(path, tensor)`` for every observation leaf.
+
+    The training loop sees a ``TensorDict`` (built by ``RslRlVecEnvWrapper``)
+    while ``ManagerBasedRlEnv.reset`` returns a plain nested ``dict``, so both
+    containers have to be walked rather than relying on ``TensorDict.items``.
+    """
+    if isinstance(obs, torch.Tensor):
+        yield prefix, obs
+        return
+    if isinstance(obs, TensorDict):
+        for key, value in obs.items():
+            yield from _leaf_observations(value, (*prefix, str(key)))
+        return
+    if isinstance(obs, Mapping):
+        for key, value in obs.items():
+            yield from _leaf_observations(value, (*prefix, str(key)))
+        return
+    raise TypeError(f"Unsupported observation container at {prefix}: {type(obs)}")
 
 
 class HIMOnPolicyRunner(OnPolicyRunner):
@@ -47,6 +72,7 @@ class HIMOnPolicyRunner(OnPolicyRunner):
                 for value in evidence.values():
                     value.zero_()
 
+        self._nan_recoveries = 0
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
         for it in range(start_it, total_it):
@@ -70,6 +96,7 @@ class HIMOnPolicyRunner(OnPolicyRunner):
                         action_counts[1] += actions.numel()
                         action_counts[2] += (actions.abs() > guard.cfg["raw_action_warn"]).sum()
                     next_obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                    self._recover_nonfinite_envs(next_obs, rewards, dones, extras)
                     check("after_step", {"next": next_obs, "terminal": extras.get("terminal_observations")})
                     if guard is not None:
                         guard.check("step_result", {"rewards": rewards, "dones": dones})
@@ -100,6 +127,7 @@ class HIMOnPolicyRunner(OnPolicyRunner):
                 loss_dict["numerics/raw_action_max"] = action_peak.item()
                 loss_dict["numerics/action_clip_fraction"] = (action_counts[0] / action_counts[1].clamp_min(1)).item()
                 loss_dict["numerics/raw_action_warn_fraction"] = (action_counts[2] / action_counts[1].clamp_min(1)).item()
+            loss_dict["numerics/nan_recoveries"] = float(self._nan_recoveries)
             self.current_learning_iteration = it
             self.logger.log(it=it, start_it=start_it, total_it=total_it,
                             collect_time=collect_time, learn_time=time.time() - start,
@@ -110,6 +138,72 @@ class HIMOnPolicyRunner(OnPolicyRunner):
         if self.logger.writer is not None:
             self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
             self.logger.stop_logging_writer()
+
+    def _recover_nonfinite_envs(
+        self,
+        next_obs: TensorDict,
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        extras: dict | None = None,
+    ) -> None:
+        """Reset environments whose observations went non-finite.
+
+        MuJoCo diverges in roughly one environment per 10^8 env-steps - usually a
+        limb wedged between two box corners until the solver produces NaN. That
+        is a local, recoverable event: abandon the episode instead of letting
+        ``TrainingNumericsGuard`` kill a multi-hour run.
+        """
+        unwrapped = getattr(self.env, "unwrapped", None)
+        if unwrapped is None or not hasattr(unwrapped, "reset"):
+            return
+        env_bad = getattr(unwrapped, "_him_numerics_bad", None)
+        bad = (
+            torch.zeros(self.env.num_envs, dtype=torch.bool, device=unwrapped.device)
+            if env_bad is None
+            else env_bad
+        )
+        leaves = list(_leaf_observations(next_obs))
+        for _, value in leaves:
+            finite = torch.isfinite(value.reshape(value.shape[0], -1)).all(dim=1)
+            if not bool(finite.all()):
+                bad = bad | ~finite
+        env_ids = bad.reshape(-1).nonzero(as_tuple=False).flatten()
+        if env_ids.numel() == 0:
+            return
+        self._nan_recoveries += int(env_ids.numel())
+        step_log = extras.get("log") if isinstance(extras, dict) else None
+        result = unwrapped.reset(env_ids=env_ids.to(unwrapped.device))
+        if isinstance(extras, dict) and step_log is not None:
+            # reset() clears the step log it shares with us; keep this step's
+            # episode statistics.
+            extras["log"] = step_log
+        reset_obs = result[0] if isinstance(result, tuple) else result
+        reset_leaves = dict(_leaf_observations(reset_obs))
+        missing = [path for path, _ in leaves if path not in reset_leaves]
+        for path, value in leaves:
+            fresh = reset_leaves.get(path)
+            if fresh is not None:
+                # Write through the leaf tensors: nested TensorDict __setitem__
+                # does not accept a batched sub-TensorDict assignment.
+                value[env_ids] = fresh[env_ids].to(value.dtype)
+            else:
+                # Defensive: never let a container mismatch leave a NaN in the
+                # rollout buffer, or the guard would abort the run we just saved.
+                value[env_ids] = torch.nan_to_num(
+                    value[env_ids], nan=0.0, posinf=0.0, neginf=0.0
+                )
+        if missing:
+            warnings.warn(
+                f"reset() did not return observation paths {missing}; zeroed them "
+                "for the recovered envs.",
+                stacklevel=2,
+            )
+        rewards[env_ids] = 0.0
+        dones[env_ids] = True
+        if env_bad is not None:
+            env_bad.zero_()
+        for value in getattr(unwrapped, "_him_numerics_evidence", {}).values():
+            value.zero_()
 
     def _reset_done_envs(self, terminal_obs: TensorDict, reset_ids: torch.Tensor) -> tuple[TensorDict, dict]:
         unwrapped = getattr(self.env, "unwrapped", None)

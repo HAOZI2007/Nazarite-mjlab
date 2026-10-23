@@ -2,9 +2,11 @@ from types import SimpleNamespace
 
 import mujoco
 import numpy as np
+import pytest
 import torch
 from nazarite.config.train_config.XZ1_env_cfgs.him_terrain import (
   BoxTireArrayTerrainCfg,
+  BoxTrapezoidRampTerrainCfg,
 )
 from nazarite.mdp import events as custom_events
 
@@ -23,7 +25,11 @@ def test_tire_array_keeps_half_tile_clear_and_fills_the_other_half():
   spec = mujoco.MjSpec()
   spec.worldbody.add_body(name="terrain")
   output = cfg.function(0.0, spec, np.random.default_rng(0))
-  tires = [geom.geom for geom in output.geometries if geom.geom.type == mujoco.mjtGeom.mjGEOM_MESH]
+  tires = [
+    geom.geom
+    for geom in output.geometries
+    if geom.geom.type == mujoco.mjtGeom.mjGEOM_MESH
+  ]
 
   assert len(tires) == 7 * 14
   assert np.isclose(output.origin[0], 2.0)
@@ -36,6 +42,61 @@ def test_tire_array_keeps_half_tile_clear_and_fills_the_other_half():
   spec.compile()
 
 
+def test_trapezoid_ramp_is_a_solid_full_width_wedge():
+  cfg = BoxTrapezoidRampTerrainCfg(
+    size=(8.0, 8.0),
+    start_x=1.6,
+    height_range=(0.06, 0.30),
+    slope_angle_range=(10.0, 30.0),
+    deck_length=0.9,
+    spawn_x_fraction=0.075,
+  )
+  spec = mujoco.MjSpec()
+  spec.worldbody.add_body(name="terrain")
+  output = cfg.function(1.0, spec, np.random.default_rng(0))
+  spec.compile()
+
+  assert output.origin[0] == pytest.approx(0.6)
+  # One floor box plus one closed prism mesh.
+  assert len(output.geometries) == 2
+  prism = [g for g in output.geometries if g.geom.type == mujoco.mjtGeom.mjGEOM_MESH]
+  assert len(prism) == 1
+  mesh = spec.mesh(prism[0].geom.meshname)
+  assert mesh.name.startswith("xz1_ramp_")
+  # Six closed faces, two triangles each: the prism has no open interior.
+  assert len(mesh.userface) == 6 * 2 * 3
+  vertices = np.asarray(mesh.uservert).reshape(-1, 3)
+  assert vertices[:, 2].max() == pytest.approx(0.30)
+  assert vertices[:, 2].min() == pytest.approx(0.0)
+  # Full patch width in y, so the robot has to climb instead of walking around.
+  assert vertices[:, 1].min() == pytest.approx(0.0)
+  assert vertices[:, 1].max() == pytest.approx(cfg.size[1])
+  # Ascend, deck and mirrored descent share one summit height.
+  assert np.count_nonzero(np.isclose(vertices[:, 2], 0.30)) == 4
+
+  # Difficulty also shrinks the summit and steepens the ascent.
+  low_spec = mujoco.MjSpec()
+  low_spec.worldbody.add_body(name="terrain")
+  low = cfg.function(0.0, low_spec, np.random.default_rng(0))
+  low_prism = [g for g in low.geometries if g.geom.type == mujoco.mjtGeom.mjGEOM_MESH][
+    0
+  ]
+  low_vertices = np.asarray(low_spec.mesh(low_prism.geom.meshname).uservert).reshape(
+    -1, 3
+  )
+  assert low_vertices[:, 2].max() == pytest.approx(0.06)
+
+
+def test_ramp_rejects_a_ramp_that_cannot_fit_the_tile():
+  cfg = BoxTrapezoidRampTerrainCfg(
+    size=(8.0, 8.0), start_x=6.0, height_range=(0.30, 0.30), deck_length=2.0
+  )
+  spec = mujoco.MjSpec()
+  spec.worldbody.add_body(name="terrain")
+  with pytest.raises(ValueError, match="does not fit"):
+    cfg.function(1.0, spec, np.random.default_rng(0))
+
+
 def test_high_wall_reset_uses_fixed_yaw_only_for_wall_envs(monkeypatch):
   calls = []
 
@@ -43,7 +104,7 @@ def test_high_wall_reset_uses_fixed_yaw_only_for_wall_envs(monkeypatch):
     calls.append((env_ids.clone(), dict(pose_range), velocity_range, asset_cfg))
 
   monkeypatch.setattr(custom_events, "reset_root_state_uniform", record_reset)
-  generator = SimpleNamespace(sub_terrains={"stairs_up": object(), "high_wall": object()})
+  generator = SimpleNamespace(sub_terrains={"flat": object(), "high_wall": object()})
   terrain = SimpleNamespace(
     cfg=SimpleNamespace(terrain_generator=generator),
     terrain_types=torch.tensor([0, 1, 1]),
