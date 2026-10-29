@@ -33,6 +33,9 @@ dev = [
 where = ["Nazarite-src"]
 include = ["nazarite*"]
 
+[tool.setuptools.package-data]
+"nazarite.rl.wmp.reference_dreamer" = ["*.yaml", "*.md", "*.txt"]
+
 [tool.uv]
 default-groups = ["dev"]
 
@@ -81,6 +84,7 @@ exclude = [
   "mjlab/docs",
   "mjlab/typings",
   "mjlab/src/mjlab/utils/lab_api",
+  "Nazarite-src/nazarite/rl/wmp/reference_dreamer",
 ]
 
 [tool.ruff]
@@ -88,4 +92,5 @@ src = ["mjlab/src", "Nazarite-src"]
 extend-exclude = [
   "mjlab/typings",
   "mjlab/src/mjlab/utils/lab_api",
+  "Nazarite-src/nazarite/rl/wmp/reference_dreamer",
 ]

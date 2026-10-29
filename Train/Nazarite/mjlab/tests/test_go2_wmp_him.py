@@ -504,7 +504,7 @@ def test_depth_normalization_rssm_shapes_and_world_model_update():
   prop = torch.rand(2, 5)
   state = model.observe_step(image, prop, torch.zeros(2, 3), torch.ones(2), state=None)
   assert state["deter"].shape == (2, 16)
-  assert model.dynamics.feature(state).shape == (2, 16)
+  assert model.dynamics.get_deter_feat(state).shape == (2, 16)
 
   batch = {
     "image": torch.randint(0, 256, (2, 3, 64, 64, 1), dtype=torch.uint8),
@@ -543,7 +543,7 @@ def test_inference_policy_without_explicit_depth_normalizes_camera_once():
   class FakeWorldModel:
     feature_dim = 4
     dynamics = SimpleNamespace(
-      feature=lambda _state: torch.zeros(2, 4),
+      get_deter_feat=lambda _state: torch.zeros(2, 4),
     )
 
     def eval(self):

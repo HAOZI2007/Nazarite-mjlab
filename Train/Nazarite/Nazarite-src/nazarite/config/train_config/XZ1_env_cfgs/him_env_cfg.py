@@ -49,14 +49,24 @@ from nazarite.config.robot_config.xz1_cfg import (
     get_xz1_cfg,
 )
 from nazarite.mdp import curriculums as custom_curriculums
-from nazarite.mdp import events as custom_events
 from nazarite.mdp import observations as custom_observations
 from nazarite.mdp import rewards as custom_rewards
 from nazarite.mdp import terminations as custom_terminations
-from nazarite.mdp.commands import TerrainConditionedVelocityCommandCfg
 from nazarite.mdp.him_numerics import configure_him_observations
 
-from .him_terrain import BoxHighWallTerrainCfg, BoxTrapezoidRampTerrainCfg
+from . import him_course
+from .him_obstacles import (
+    XZ1GapTerrainCfg,
+    XZ1LowFrameTerrainCfg,
+    XZ1PlumBlossomTerrainCfg,
+    XZ1SingleBeamTerrainCfg,
+    XZ1TireArrayTerrainCfg,
+)
+from .him_terrain import (
+    BoxHighWallTerrainCfg,
+    BoxNarrowStairsTerrainCfg,
+    BoxTrapezoidRampTerrainCfg,
+)
 from .terminal_observations import configure_estimator_observations
 
 # XZ1-local HIM knobs.  Keep these here instead of mutating the Go2 task.
@@ -91,18 +101,17 @@ XZ1_HIM_LEG_CONTACT_HISTORY = (
 # with a 30% chance of holding the previous lag, resampled every ten steps.
 # A trunk that rests on the terrain means the robot has fallen onto its belly
 # and is dragging itself forward, which the 70 degree orientation limit does not
-# catch.  Five newtons is a real weight transfer rather than a scrape; holding
-# it for a quarter of a control step (50 ms = 25 substeps) rejects single
-# substep penetration spikes and CCD blips instead of ending episodes early.
+# catch. Count predominantly vertical support, not horizontal wall impacts.
 XZ1_HIM_BASE_CONTACT_FORCE_THRESHOLD = 5.0
-XZ1_HIM_BASE_CONTACT_HOLD_S = 0.05
+XZ1_HIM_BASE_CONTACT_MIN_VERTICAL_FORCE_RATIO = 0.7
+XZ1_HIM_BASE_CONTACT_HOLD_S = 0.20
 XZ1_HIM_BASE_CONTACT_HISTORY = max(
     1, round(XZ1_HIM_BASE_CONTACT_HOLD_S / XZ1_HIM_PHYSICS_DT)
 )
 # A belly slide drags the trunk across box edges, so the load chatters.  Count
-# loaded substeps inside the 50 ms history instead of requiring one unbroken
-# run: ten substeps is 20 ms of trunk load.
-XZ1_HIM_BASE_CONTACT_LOAD_S = 0.02
+# loaded substeps inside the 200 ms history instead of requiring one unbroken
+# run: 75 substeps is 150 ms of trunk support, allowing short obstacle scrapes.
+XZ1_HIM_BASE_CONTACT_LOAD_S = 0.15
 XZ1_HIM_BASE_CONTACT_LOAD_STEPS = max(
     1, round(XZ1_HIM_BASE_CONTACT_LOAD_S / XZ1_HIM_PHYSICS_DT)
 )
@@ -156,23 +165,104 @@ def _standing_servo_targets() -> dict[str, float]:
 
 
 XZ1_HIM_STANCE_TARGET = _standing_servo_targets()
-# Training terrain set: flat, pyramid stairs, a discrete random-height grid, a
-# solid trapezoidal ramp and the high wall. Difficulty climbs along ten rows, so
-# the last row reaches the 300 mm wall (the competition rule height).
+# The base HIM task keeps its seven locomotion terrain types. WMP courses
+# below have a separate configuration and are selected only by the teacher.
+# Difficulty climbs along ten rows; the last row reaches the 300 mm wall.
 XZ1_HIM_TERRAIN_PATCH = (8.0, 8.0)
 XZ1_HIM_TERRAIN_ROWS = 10
-# Reference layout: five stair rings plus the central sixth level. Keep
-# XZ1's tread width and height range, with flat space around the staircase.
+# Keep competition-width exposure even after narrow terrain becomes easy.
+XZ1_HIM_NARROW_WIDTH_RANGE = (0.8, 0.8)
+XZ1_HIM_NARROW_SAMPLING_MINIMUMS = {"narrow_stairs": 0.15, "narrow_ramp": 0.10}
+XZ1_HIM_HIP_OUTWARD_ALLOWANCE = 0.15
+XZ1_HIM_HIP_INWARD_ALLOWANCE = 0.15
+XZ1_HIM_HIP_SOFT_GAIN = 6.0
+XZ1_HIM_HIP_BASE_GAIN = 0.25
+XZ1_HIM_SUPPORT_EDGE_MARGIN = 0.03
+XZ1_HIM_SUPPORT_EDGE_WEIGHT = -0.20
+XZ1_HIM_ACTION_RATE_WEIGHT = -0.015
+XZ1_HIM_POSE_WEIGHT = 0.20
+# Pose is measured from XZ1_INIT_STATE, independently of servo precompensation.
+XZ1_HIM_POSE_STD_STANDING = {
+    ".*_hip_joint": 0.10,
+    ".*_thigh_joint": 0.20,
+    ".*_shank_joint": 0.30,
+}
+XZ1_HIM_POSE_STD_WALKING = {
+    ".*_hip_joint": 0.20,
+    ".*_thigh_joint": 0.60,
+    ".*_shank_joint": 0.80,
+}
+XZ1_HIM_POSE_STD_RUNNING = {
+    ".*_hip_joint": 0.25,
+    ".*_thigh_joint": 0.70,
+    ".*_shank_joint": 0.90,
+}
+XZ1_HIM_POSE_TERRAIN_TOLERANCE = {
+    ".*_hip_joint": 0.04,
+    ".*_thigh_joint": 0.20,
+    ".*_shank_joint": 0.30,
+}
+XZ1_WMP_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
+    curriculum=True,
+    size=XZ1_HIM_TERRAIN_PATCH,
+    num_rows=XZ1_HIM_TERRAIN_ROWS,
+    border_width=25.0,
+    sub_terrains={
+        "flat": terrain_gen.BoxFlatTerrainCfg(
+            proportion=0.10,
+            size=XZ1_HIM_TERRAIN_PATCH,
+        ),
+        "high_wall": BoxHighWallTerrainCfg(
+            proportion=0.10,
+            size=XZ1_HIM_TERRAIN_PATCH,
+            wall_height_range=(0.05, 0.30),
+            wall_thickness=0.08,
+        ),
+        "narrow_stairs": BoxNarrowStairsTerrainCfg(
+            proportion=0.15,
+            size=XZ1_HIM_TERRAIN_PATCH,
+            width_range=XZ1_HIM_NARROW_WIDTH_RANGE,
+        ),
+        "narrow_ramp": BoxTrapezoidRampTerrainCfg(
+            proportion=0.10,
+            size=XZ1_HIM_TERRAIN_PATCH,
+            width_range=XZ1_HIM_NARROW_WIDTH_RANGE,
+            height_range=(0.06, 0.36),
+            slope_angle_range=(10.0, 20.0),
+            deck_length=0.8,
+        ),
+        "plum_blossom": XZ1PlumBlossomTerrainCfg(
+            proportion=0.15,
+            size=XZ1_HIM_TERRAIN_PATCH,
+        ),
+        "single_beam": XZ1SingleBeamTerrainCfg(
+            proportion=0.15,
+            size=XZ1_HIM_TERRAIN_PATCH,
+        ),
+        "low_frame": XZ1LowFrameTerrainCfg(
+            proportion=0.10,
+            size=XZ1_HIM_TERRAIN_PATCH,
+        ),
+        "tire_array": XZ1TireArrayTerrainCfg(
+            proportion=0.10,
+            size=XZ1_HIM_TERRAIN_PATCH,
+        ),
+        "gap": XZ1GapTerrainCfg(
+            proportion=0.05,
+            size=XZ1_HIM_TERRAIN_PATCH,
+        ),
+    },
+)
+
+# Original HIM terrain distribution and dimensions, before the WMP expansion.
 XZ1_HIM_STAIR_LEVELS = 6
 XZ1_HIM_STAIR_WIDTH = 0.35
 XZ1_HIM_STAIR_PLATFORM_WIDTH = 2.5
 XZ1_HIM_STAIR_BORDER_WIDTH = (
-    XZ1_HIM_TERRAIN_PATCH[0] - XZ1_HIM_STAIR_PLATFORM_WIDTH
+    XZ1_HIM_TERRAIN_PATCH[0]
+    - XZ1_HIM_STAIR_PLATFORM_WIDTH
     - 2 * (XZ1_HIM_STAIR_LEVELS - 1) * XZ1_HIM_STAIR_WIDTH
 ) / 2
-# Grid cells are 0.4 m squares whose height is sampled in [-bound, +bound]; the
-# bound grows to 100 mm and similar neighbours are merged to keep the geom count
-# low. The continuous slab below the cells turns the gaps into a walkable floor.
 XZ1_HIM_GRID_CELL = 0.4
 XZ1_HIM_GRID_MAX_HEIGHT = 0.10
 XZ1_HIM_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
@@ -186,7 +276,7 @@ XZ1_HIM_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
             size=XZ1_HIM_TERRAIN_PATCH,
         ),
         "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
-            proportion=0.30,
+            proportion=0.15,
             size=XZ1_HIM_TERRAIN_PATCH,
             step_height_range=(0.03, 0.12),
             step_width=XZ1_HIM_STAIR_WIDTH,
@@ -206,12 +296,12 @@ XZ1_HIM_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
             border_width=0.25,
         ),
         "trapezoid_ramp": BoxTrapezoidRampTerrainCfg(
-            proportion=0.20,
+            proportion=0.10,
             size=XZ1_HIM_TERRAIN_PATCH,
             start_x=1.6,
-            height_range=(0.06, 0.30),
-            slope_angle_range=(10.0, 30.0),
-            deck_length=0.9,
+            height_range=(0.06, 0.36),
+            slope_angle_range=(10.0, 20.0),
+            deck_length=0.8,
             spawn_x_fraction=0.075,
         ),
         "high_wall": BoxHighWallTerrainCfg(
@@ -220,12 +310,35 @@ XZ1_HIM_COMPLEX_TERRAINS_CFG = TerrainGeneratorCfg(
             wall_height_range=(0.05, 0.30),
             wall_thickness=0.08,
         ),
+        "narrow_stairs": BoxNarrowStairsTerrainCfg(
+            proportion=0.15,
+            size=XZ1_HIM_TERRAIN_PATCH,
+            width_range=XZ1_HIM_NARROW_WIDTH_RANGE,
+        ),
+        "narrow_ramp": BoxTrapezoidRampTerrainCfg(
+            proportion=0.10,
+            size=XZ1_HIM_TERRAIN_PATCH,
+            width_range=XZ1_HIM_NARROW_WIDTH_RANGE,
+            height_range=(0.06, 0.36),
+            slope_angle_range=(10.0, 20.0),
+            deck_length=0.8,
+        ),
     },
 )
 
 
 def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """Create the independent XZ1 HIM complex-terrain environment."""
+    """Create the seven-terrain XZ1 HIM foundation locomotion task."""
+    return _build_xz1_env(play, XZ1_HIM_COMPLEX_TERRAINS_CFG)
+
+
+def _build_xz1_env(
+    play: bool,
+    terrain_generator_cfg: TerrainGeneratorCfg,
+    *,
+    obstacle_courses: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """Build shared robot/learning settings with task-specific terrain state."""
     # Only geom group 0 is raycast: the generated terrain lives there, while the
     # robot's visual meshes are group 1 and its collision primitives group 3.
     # `exclude_parent_body` is not enough on its own -- MuJoCo excludes exactly
@@ -263,6 +376,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         reduce="netforce",
         num_slots=1,
         track_air_time=True,
+        preserve_order=True,
     )
     leg_ground = ContactSensorCfg(
         name="leg_ground_contact",
@@ -399,7 +513,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         )
     }
     commands: dict[str, CommandTermCfg] = {
-        "twist": TerrainConditionedVelocityCommandCfg(
+        "twist": him_course.XZ1CourseVelocityCommandCfg(
             entity_name="robot",
             resampling_time_range=(8.0, 12.0),
             rel_standing_envs=0.05,
@@ -423,15 +537,19 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             # legged_gym curriculum avoids exactly this by deriving the yaw
             # rate from a heading error every step
             # (legged_robot.py:384-387); 0.5 is its control stiffness.
-            rel_heading_envs=0.8,
+            rel_heading_envs=0.5,
             heading_command=True,
             heading_control_stiffness=0.5,
             debug_vis=True,
-            # The wall spans the full patch width, so the policy has to face it
-            # and push through instead of sidestepping. The ramp is symmetric in
-            # x, so it needs no forward-only command constraint.
+            # Wide terrains retain their command distribution. Narrow courses
+            # use +x travel with bounded heading/centerline corrections.
             forward_only_terrain_names=("high_wall",),
             forward_only_x_min=0.3,
+            narrow_speed_range=(0.3, 0.7),
+            lateral_gain=0.8,
+            lateral_limit=0.15,
+            yaw_gain=0.8,
+            yaw_limit=0.3,
             ranges=UniformVelocityCommandCfg.Ranges(
                 lin_vel_x=(-1.0, 1.0),
                 lin_vel_y=(-1.0, 1.0),
@@ -442,7 +560,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
     }
     events = {
         "reset_base": EventTermCfg(
-            func=custom_events.reset_root_state_uniform_facing_high_wall,
+            func=him_course.reset_xz1_course,
             mode="reset",
             params={
                 "pose_range": {
@@ -536,18 +654,10 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             },
         ),
     }
-    # Reward set ports the reference Go2 HIM recipe used by
-    # logs/rsl_rl/go2_him/2026-09-28_20-59-53 and 2026-09-29_19-00-44: same
-    # nineteen terms in the same order with the same weights and parameters,
-    # substituting only XZ1 bodies, sites, and geoms.  Two intentional
-    # differences:
-    #   * ``pose`` keeps the reference weight of exactly 0.0, so the term is
-    #     declared for audit visibility but contributes no gradient.
-    #   * ``leg_collision`` no longer reuses the ``illegal_contact``
-    #     termination as a reward.  The reference value is charged when a
-    #     thigh or shank stays on the terrain for two whole control steps, so
-    #     unavoidable brushes while climbing are free and kneeling or dragging
-    #     a shank is not.
+    # XZ1-specific tuning built on the reference HIM recipe. Pose tracking is
+    # hip-focused, relaxes on rough terrain, and is disabled on high walls.
+    # Leg collision charges sustained terrain contact over two control steps;
+    # transient brushes while climbing remain free.
     rewards = {
         "track_linear_velocity": RewardTermCfg(
             func=custom_rewards.him_track_linear_velocity,
@@ -578,16 +688,20 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             params={"asset_cfg": SceneEntityCfg("robot", body_names=(XZ1_BASE_BODY,))},
         ),
         "pose": RewardTermCfg(
-            func=velocity_mdp.variable_posture,
-            weight=0.0,
+            func=him_course.XZ1TerrainPosture,
+            weight=XZ1_HIM_POSE_WEIGHT,
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
                 "command_name": "twist",
-                "std_standing": {},
-                "std_walking": {},
-                "std_running": {},
+                "std_standing": XZ1_HIM_POSE_STD_STANDING.copy(),
+                "std_walking": XZ1_HIM_POSE_STD_WALKING.copy(),
+                "std_running": XZ1_HIM_POSE_STD_RUNNING.copy(),
+                "terrain_tolerance": XZ1_HIM_POSE_TERRAIN_TOLERANCE.copy(),
                 "walking_threshold": 0.1,
                 "running_threshold": 1.5,
+                "scan_sensor_name": "terrain_scan",
+                "terrain_radius": 0.35,
+                "terrain_height_std": (0.01, 0.08),
             },
         ),
         "body_ang_vel": RewardTermCfg(
@@ -603,19 +717,45 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         "is_terminated": RewardTermCfg(func=envs_mdp.is_terminated, weight=-10.0),
         "joint_acc_l2": RewardTermCfg(func=envs_mdp.joint_acc_l2, weight=-2.5e-7),
         "joint_pos_limits": RewardTermCfg(func=envs_mdp.joint_pos_limits, weight=-1.0),
-        # These two scale with the square of the action scale, so they are only
-        # meaningful relative to it. They were tripled (-0.03) to compensate a
-        # thigh/shank action scale of 0.5 rad; that scale is now 0.25 rad like
-        # the Go2 reference, so the reference weights apply unchanged.
-        "action_rate_l2": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.01),
-        "smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.01),
+        # Penalize raw action differences with the actuator action scale held
+        # at 0.25. Increase first-order smoothing mildly; retain the existing
+        # second-order weight to avoid changing both penalties at once.
+        "action_rate_l2": RewardTermCfg(
+            func=envs_mdp.action_rate_l2,
+            weight=XZ1_HIM_ACTION_RATE_WEIGHT,
+        ),
+        "smoothness": RewardTermCfg(func=envs_mdp.action_acc_l2, weight=-0.02),
         "joint_torques_l2": RewardTermCfg(
             func=envs_mdp.joint_torques_l2, weight=-2.0e-5
         ),
         "hip_pos": RewardTermCfg(
-            func=custom_rewards.hip_joint_deviation_penalty,
-            weight=-0.1,
-            params={"command_name": "twist"},
+            func=him_course.xz1_hip_position_cost,
+            weight=-0.05,
+            params={
+                "command_name": "twist",
+                "outward_allowance": XZ1_HIM_HIP_OUTWARD_ALLOWANCE,
+                "inward_allowance": XZ1_HIM_HIP_INWARD_ALLOWANCE,
+                "soft_gain": XZ1_HIM_HIP_SOFT_GAIN,
+                "base_gain": XZ1_HIM_HIP_BASE_GAIN,
+                "lateral_full": 0.2,
+                "lateral_free": 0.6,
+                "yaw_full": 0.2,
+                "yaw_free": 0.6,
+            },
+        ),
+        "narrow_support_edge": RewardTermCfg(
+            func=him_course.narrow_support_edge_cost,
+            weight=XZ1_HIM_SUPPORT_EDGE_WEIGHT,
+            params={
+                "sensor_name": "feet_ground_contact",
+                "asset_cfg": SceneEntityCfg(
+                    "robot", site_names=XZ1_FOOT_SITES, preserve_order=True
+                ),
+                "edge_margin": XZ1_HIM_SUPPORT_EDGE_MARGIN,
+                "foot_radius": 0.024,
+                "force_threshold": 5.0,
+                "distance_scale": 0.10,
+            },
         ),
         "foot_gait": RewardTermCfg(
             func=custom_rewards.feet_gait,
@@ -697,7 +837,7 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         # goes negative.
         "reverse_velocity": RewardTermCfg(
             func=custom_rewards.reverse_velocity_penalty,
-            weight=-2.0,
+            weight=-1.0,
             params={
                 "command_name": "twist",
                 "command_threshold": 0.1,
@@ -762,12 +902,26 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
                 "sensor_name": "base_ground_contact",
                 "force_threshold": XZ1_HIM_BASE_CONTACT_FORCE_THRESHOLD,
                 "min_loaded_steps": XZ1_HIM_BASE_CONTACT_LOAD_STEPS,
+                "min_vertical_force_ratio": (
+                    XZ1_HIM_BASE_CONTACT_MIN_VERTICAL_FORCE_RATIO
+                ),
             },
         ),
         "fell_over": TerminationTermCfg(
             func=envs_mdp.bad_orientation, params={"limit_angle": math.radians(70.0)}
         ),
+        "left_narrow_course": TerminationTermCfg(func=him_course.left_narrow_course),
+        "obstacle_ground_contact": TerminationTermCfg(
+            func=him_course.ObstacleGroundContact,
+        ),
+        # A completed crossing is a successful timeout, not a fall penalty.
+        "narrow_course_complete": TerminationTermCfg(
+            func=him_course.narrow_course_complete,
+            time_out=True,
+        ),
     }
+    if not obstacle_courses:
+        terminations.pop("obstacle_ground_contact")
     curriculum = {
         "terrain_levels": CurriculumTermCfg(
             # The native distance rule can require more distance than an 8 m
@@ -789,8 +943,8 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
             # distance is capped at the 4.0 m half tile, and promotion needs
             # two successes while demotion needs three failures, moving the
             # streak equilibrium from p^3=(1-p)^2 (p=0.57) to p^2=(1-p)^3
-            # (p=0.43).  Capping the sparse terrains still keeps the wall and
-            # the ramp inside what a 0.25 m foot lift can clear.
+            # (p=0.43). Sparse terrains can progress to the last row: a 0.30 m
+            # wall and a competition-profile ramp (0.36 m high, 20 degrees).
             #
             # The structural issue this does not fix is the criterion
             # itself: net displacement says little about progress when the
@@ -805,21 +959,37 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
                 "max_success_distance": 4.0,
                 "success_streak_length": 2,
                 "failure_streak_length": 3,
-                "sparse_terrain_names": ("trapezoid_ramp", "high_wall"),
+                "sparse_terrain_names": (
+                    ("high_wall", *him_course.COURSE_TERRAIN_NAMES)
+                    if obstacle_courses
+                    else (
+                        "trapezoid_ramp",
+                        "high_wall",
+                        *him_course.NARROW_TERRAIN_NAMES,
+                    )
+                ),
                 "sparse_success_distance_scale": 0.5,
                 "sparse_min_success_distance": 0.8,
                 "sparse_max_success_distance": 2.0,
                 "sparse_success_streak_length": 3,
                 "sparse_failure_streak_length": 4,
-                "sparse_max_level": 4,
+                "sparse_max_level": XZ1_HIM_TERRAIN_ROWS - 1,
                 "flat_terrain_name": "flat",
                 "high_wall_terrain_name": "high_wall",
                 "high_wall_crossing_clearance": 0.4,
-                "adaptive_type_sampling": True,
+                # The shared legacy branch describes the old half-tile tire
+                # lattice. The XZ1 course filter below uses the actual 2x4 array.
+                "tire_array_terrain_name": "" if obstacle_courses else "tire_array",
+                # WMP courses follow reference fixed terrain columns. An easy
+                # course must never lend its row or streak to a different skill.
+                "adaptive_type_sampling": not obstacle_courses,
+                "randomize_completed_levels": obstacle_courses,
                 "adaptive_sampling_floor": 0.25,
                 "adaptive_sampling_temperature": 1.0,
                 "adaptive_warmup_episodes": 20,
                 "type_success_ema_alpha": 0.05,
+                "success_filter": him_course.narrow_success_filter,
+                "type_sampling_minimums": dict(XZ1_HIM_NARROW_SAMPLING_MINIMUMS),
             },
         ),
         "command_vel": CurriculumTermCfg(
@@ -853,8 +1023,8 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         scene=SceneCfg(
             terrain=TerrainEntityCfg(
                 terrain_type="generator",
-                terrain_generator=deepcopy(XZ1_HIM_COMPLEX_TERRAINS_CFG),
-                max_init_terrain_level=1,
+                terrain_generator=deepcopy(terrain_generator_cfg),
+                max_init_terrain_level=0 if obstacle_courses else 1,
             ),
             sensors=(
                 terrain_scan,
@@ -878,27 +1048,49 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         curriculum=curriculum,
         metrics={
             "mean_action_acc": MetricsTermCfg(func=envs_mdp.mean_action_acc),
+            "hip_outward_peak": MetricsTermCfg(
+                func=him_course.hip_outward_peak,
+                reduce="max",
+            ),
             "rr_thigh_action_abs": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_action_abs,
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",))},
+                params={
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RR_thigh_joint",)
+                    )
+                },
             ),
             "rl_thigh_action_abs": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_action_abs,
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",))},
+                params={
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RL_thigh_joint",)
+                    )
+                },
             ),
             "rr_thigh_target_error": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_target_error,
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",))},
+                params={
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RR_thigh_joint",)
+                    )
+                },
             ),
             "rl_thigh_target_error": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_target_error,
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",))},
+                params={
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RL_thigh_joint",)
+                    )
+                },
             ),
             "rr_thigh_torque_ratio": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_torque_ratio,
                 reduce="max",
                 params={
-                    "asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",)),
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RR_thigh_joint",)
+                    ),
                     "effort_limit": 31.7,
                 },
             ),
@@ -906,19 +1098,29 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
                 func=custom_rewards.xz1_joint_torque_ratio,
                 reduce="max",
                 params={
-                    "asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",)),
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RL_thigh_joint",)
+                    ),
                     "effort_limit": 31.7,
                 },
             ),
             "rr_thigh_limit_proximity": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_limit_proximity,
                 reduce="max",
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RR_thigh_joint",))},
+                params={
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RR_thigh_joint",)
+                    )
+                },
             ),
             "rl_thigh_limit_proximity": MetricsTermCfg(
                 func=custom_rewards.xz1_joint_limit_proximity,
                 reduce="max",
-                params={"asset_cfg": SceneEntityCfg("robot", joint_names=("RL_thigh_joint",))},
+                params={
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=("RL_thigh_joint",)
+                    )
+                },
             ),
             "rear_thigh_ground_contact": MetricsTermCfg(
                 func=velocity_mdp.illegal_contact,
@@ -972,11 +1174,17 @@ def Nazarite_HIM_Complex_Terrain_XZ1(play: bool = False) -> ManagerBasedRlEnvCfg
         cfg.observations["actor"].enable_corruption = False
         cfg.events.pop("push_robot", None)
         cfg.curriculum = {}
-        cfg.events["randomize_terrain"] = EventTermCfg(
-            func=envs_mdp.randomize_terrain, mode="reset", params={}
-        )
-        terrain_generator.curriculum = False
-        terrain_generator.num_cols = 5
+        # Select the tile BEFORE the type-dependent pose reset. Keep columns
+        # tied to terrain types and rows to known difficulty, even in play;
+        # randomizing geometry per cell would invalidate course boundary checks.
+        cfg.events = {
+            "randomize_terrain": EventTermCfg(
+                func=envs_mdp.randomize_terrain, mode="reset", params={}
+            ),
+            **cfg.events,
+        }
+        terrain_generator.curriculum = True
+        terrain_generator.num_cols = len(terrain_generator.sub_terrains)
         terrain_generator.num_rows = 5
         terrain_generator.border_width = 10.0
     return cfg

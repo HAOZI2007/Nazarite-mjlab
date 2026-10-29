@@ -234,24 +234,26 @@ class BoxHighWallTerrainCfg(SubTerrainCfg):
 
 @dataclass(kw_only=True)
 class BoxTrapezoidRampTerrainCfg(SubTerrainCfg):
-    """A solid trapezoidal ramp spanning the complete terrain width.
+    """A solid trapezoidal ramp with optional curriculum-controlled width.
 
     The wedge rises from the floor, holds a flat summit deck and descends on
     the far side, so its x-z cross-section is a closed trapezoid. The ramp is
-    full width in y, so the policy has to climb it instead of walking around
-    either end, and both the ascent and the descent are graded by difficulty.
+    full width in y by default to prevent bypassing; width_range creates a
+    centered narrow variant. Both ascent and descent are graded by difficulty.
     """
 
     start_x: float = 1.6
     """Patch x of the first ramp vertex, in meters."""
-    height_range: tuple[float, float] = (0.06, 0.30)
+    height_range: tuple[float, float] = (0.06, 0.36)
     """Summit height bound, interpolated by difficulty, in meters."""
-    slope_angle_range: tuple[float, float] = (10.0, 30.0)
+    slope_angle_range: tuple[float, float] = (10.0, 20.0)
     """Ascent/descent angle bound, interpolated by difficulty, in degrees."""
-    deck_length: float = 0.9
+    deck_length: float = 0.8
     """Summit deck length, in meters."""
     spawn_x_fraction: float = 0.075
     """Spawn origin x as a fraction of the patch width, leaving run-up room."""
+    width_range: tuple[float, float] | None = None
+    """Optional curriculum width; None retains the original full-width ramp."""
 
     def function(
         self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
@@ -270,8 +272,21 @@ class BoxTrapezoidRampTerrainCfg(SubTerrainCfg):
                 f"A {rise:.2f} m ramp at {math.degrees(angle):.0f} deg needs "
                 f"{x3 - x0:.2f} m, which does not fit in a {self.size[0]} m tile."
             )
+        width = (
+            self.size[1]
+            if self.width_range is None
+            else _interpolate(difficulty, self.width_range)
+        )
+        if not 0.0 < width <= self.size[1]:
+            raise ValueError("Ramp width must be positive and fit the tile.")
+        center_y = self.size[1] / 2
         prism = _ramp_prism(
-            spec, body, (x0, x1, x2, x3), (0.0, self.size[1]), rise, rng
+            spec,
+            body,
+            (x0, x1, x2, x3),
+            (center_y - width / 2, center_y + width / 2),
+            rise,
+            rng,
         )
         geometries = [
             TerrainGeometry(geom=floor, color=_FLOOR),
@@ -283,8 +298,74 @@ class BoxTrapezoidRampTerrainCfg(SubTerrainCfg):
         return TerrainOutput(origin=origin, geometries=geometries)
 
 
+@dataclass(kw_only=True)
+class BoxNarrowStairsTerrainCfg(SubTerrainCfg):
+    """Straight ascent/deck/descent with the competition's 0.32 m treads.
+
+    Three 0.12 m risers reach 0.36 m at maximum difficulty. Side ground stays
+    at zero height, matching the arena rather than introducing artificial pits.
+    """
+
+    start_x: float = 1.6
+    step_height_range: tuple[float, float] = (0.03, 0.12)
+    step_depth: float = 0.32
+    num_steps: int = 3
+    deck_length: float = 0.8
+    width_range: tuple[float, float] = (1.2, 0.8)
+    spawn_x_fraction: float = 0.075
+
+    def function(
+        self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
+    ) -> TerrainOutput:
+        del rng
+        width = _interpolate(difficulty, self.width_range)
+        if self.num_steps < 1 or self.step_depth <= 0 or self.deck_length <= 0:
+            raise ValueError("Stair step count, depth and deck must be positive.")
+        if not 0 < width <= self.size[1]:
+            raise ValueError("Stair width must be positive and fit the tile.")
+        end_x = (
+            self.start_x + 2 * (self.num_steps - 1) * self.step_depth + self.deck_length
+        )
+        if self.start_x < 0 or end_x > self.size[0] - 0.25:
+            raise ValueError("Narrow staircase does not fit the tile.")
+        if not 0 <= self.spawn_x_fraction <= 1:
+            raise ValueError("spawn_x_fraction must be in [0, 1].")
+        body = spec.body("terrain")
+        geometries = [TerrainGeometry(geom=_floor(body, self.size), color=_FLOOR)]
+        step_height = _interpolate(difficulty, self.step_height_range)
+        if step_height <= 0:
+            raise ValueError("Stair height must be positive.")
+
+        def slab(x: float, length: float, height: float) -> None:
+            geom = body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=(length / 2, width / 2, height / 2),
+                pos=(x + length / 2, self.size[1] / 2, height / 2),
+                friction=(0.8, 0.1, 0.1),
+            )
+            geometries.append(TerrainGeometry(geom=geom, color=_RAMP))
+
+        for index in range(self.num_steps - 1):
+            slab(
+                self.start_x + index * self.step_depth,
+                self.step_depth,
+                (index + 1) * step_height,
+            )
+        deck_start = self.start_x + (self.num_steps - 1) * self.step_depth
+        slab(deck_start, self.deck_length, self.num_steps * step_height)
+        for index in range(self.num_steps - 1):
+            slab(
+                deck_start + self.deck_length + index * self.step_depth,
+                self.step_depth,
+                (self.num_steps - 1 - index) * step_height,
+            )
+        origin = np.array([self.size[0] * self.spawn_x_fraction, self.size[1] / 2, 0.0])
+        return TerrainOutput(origin=origin, geometries=geometries)
+
+
 __all__ = [
     "BoxHighWallTerrainCfg",
+    "BoxNarrowStairsTerrainCfg",
     "BoxTireArrayTerrainCfg",
     "BoxTrapezoidRampTerrainCfg",
 ]

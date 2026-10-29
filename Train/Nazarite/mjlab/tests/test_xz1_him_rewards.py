@@ -18,6 +18,7 @@ from nazarite.config.robot_config.xz1_cfg import (
   XZ1_XML,
   get_xz1_cfg,
 )
+from nazarite.config.train_config.XZ1_env_cfgs import him_course
 from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
   XZ1_HIM_BASE_CONTACT_HISTORY,
   XZ1_HIM_BASE_CONTACT_LOAD_STEPS,
@@ -220,11 +221,8 @@ def test_terrain_relative_clearance_penalizes_stationary_dragging_swing_feet():
   assert result.item() == pytest.approx(0.16, abs=1.0e-6)
 
 
-# The Go2 HIM reference reward set, with three deliberate deviations measured on
-# the XZ1 rollout: body_orientation_l2 is five times heavier because the asset is
-# symmetric yet the policy settles into a load dependent left-high lean, and the
-# two smoothness terms keep the reference weight because the XZ1 action scale now
-# matches Go2's 0.25 rad.
+# XZ1-specific weights based on the Go2 HIM reference, including positive pose
+# tracking outside high walls and narrow-course support regularization.
 XZ1_REFERENCE_REWARD_WEIGHTS = {
   # Steering retuned by hand after the stall diagnosis: linear tracking pays
   # more, angular tracking pays less (it was handing out 0.98 per step whenever
@@ -232,16 +230,17 @@ XZ1_REFERENCE_REWARD_WEIGHTS = {
   "track_linear_velocity": 1.5,
   "track_angular_velocity": 0.8,
   "body_orientation_l2": -0.5,
-  "pose": 0.0,
+  "pose": 0.2,
   "body_ang_vel": -0.05,
   "angular_momentum": -0.025,
   "is_terminated": -10.0,
   "joint_acc_l2": -2.5e-7,
   "joint_pos_limits": -1.0,
-  "action_rate_l2": -0.01,
-  "smoothness": -0.01,
+  "action_rate_l2": -0.015,
+  "smoothness": -0.02,
   "joint_torques_l2": -2.0e-5,
-  "hip_pos": -0.1,
+  "hip_pos": -0.05,
+  "narrow_support_edge": -0.2,
   "foot_gait": 0.1,
   "foot_clearance": -0.01,
   "foot_slip": -0.05,
@@ -251,7 +250,7 @@ XZ1_REFERENCE_REWARD_WEIGHTS = {
   # Added on top of the reference set to price retrograde motion: the Gaussian
   # tracking reward is convex, so rocking through the command pays when steady
   # tracking is impossible.
-  "reverse_velocity": -2.0,
+  "reverse_velocity": -1.0,
   # Ported from the UW-HIMLoco dog stack: hovering-foot cost, wedged-foot cost
   # and left/right hip symmetry.
   "prolonged_air_time": -0.5,
@@ -360,11 +359,10 @@ def test_xz1_him_config_matches_reference_reward_set():
   assert tracking["std"] == pytest.approx(0.5)
   assert cfg.rewards["track_angular_velocity"].params["std"] == pytest.approx(2.0**-0.5)
 
-  # The posture term is declared with the reference weight of zero, so it must
-  # stay a no-op even though its parameters are configured.
+  # Pose tracking uses terrain relief and masks high walls in the callable.
   pose = cfg.rewards["pose"]
-  assert pose.func is velocity_mdp.variable_posture
-  assert pose.weight == 0.0
+  assert pose.func is him_course.XZ1TerrainPosture
+  assert pose.weight == pytest.approx(0.2)
   assert pose.params["walking_threshold"] == 0.1
   assert pose.params["running_threshold"] == 1.5
 
@@ -376,14 +374,16 @@ def test_xz1_him_config_matches_reference_reward_set():
     "random_grid",
     "trapezoid_ramp",
     "high_wall",
+    "narrow_stairs",
+    "narrow_ramp",
   )
   assert cfg.commands["twist"].forward_only_terrain_names == ("high_wall",)
   # Heading mode: the yaw reference is a sampled heading angle, so the linear
   # command ranges still cover every direction while net displacement tracks
-  # real progress again.  A fifth of the envs keep plain yaw-rate tracking.
+  # real progress again. Half of the envs keep plain yaw-rate tracking.
   twist = cfg.commands["twist"]
   assert twist.heading_command is True
-  assert twist.rel_heading_envs == pytest.approx(0.8)
+  assert twist.rel_heading_envs == pytest.approx(0.5)
   assert twist.heading_control_stiffness == pytest.approx(0.5)
   assert twist.ranges.heading == (pytest.approx(-math.pi), pytest.approx(math.pi))
   assert twist.ranges.lin_vel_x == (-1.0, 1.0)
@@ -396,8 +396,9 @@ def test_xz1_him_config_matches_reference_reward_set():
   wall = generator.sub_terrains["high_wall"]
   assert wall.wall_height_range == (0.05, 0.30)
   ramp = generator.sub_terrains["trapezoid_ramp"]
-  assert ramp.height_range == (0.06, 0.30)
-  assert ramp.slope_angle_range == (10.0, 30.0)
+  assert ramp.height_range == (0.06, 0.36)
+  assert ramp.slope_angle_range == (10.0, 20.0)
+  assert ramp.deck_length == pytest.approx(0.8)
   grid = generator.sub_terrains["random_grid"]
   assert grid.fill_gaps is True
   assert grid.grid_height_range == (0.0, 0.10)
@@ -411,7 +412,7 @@ def test_xz1_him_config_matches_reference_reward_set():
   assert levels["success_streak_length"] == 2
   assert levels["failure_streak_length"] == 3
   assert levels["flat_terrain_name"] == "flat"
-  assert levels["sparse_max_level"] == 4
+  assert levels["sparse_max_level"] == generator.num_rows - 1 == 9
 
   # Reference physics timing: 2 ms MuJoCo steps, ten of them per 20 ms action.
   assert cfg.sim.mujoco.timestep == 0.002
@@ -475,7 +476,9 @@ def test_xz1_him_config_matches_reference_reward_set():
   # Each thigh carries one collision box; each shank carries two thin cylinders
   # (upper and lower), so the sensor sees twelve leg geoms and no foot or base
   # geometry.
-  expected_leg_geoms = {f"{leg}_thigh_link_primitive_1" for leg in ("FL", "FR", "RR", "RL")}
+  expected_leg_geoms = {
+    f"{leg}_thigh_link_primitive_1" for leg in ("FL", "FR", "RR", "RL")
+  }
   expected_leg_geoms |= {
     f"{leg}_shank_link_primitive_{index}"
     for leg in ("FL", "FR", "RR", "RL")
@@ -491,20 +494,28 @@ def test_xz1_him_config_matches_reference_reward_set():
   air = cfg.rewards["prolonged_air_time"]
   assert air.params["max_air_time"] == pytest.approx(0.60)
 
-  # Belly contact ends the episode: 5 N held for one twentieth of a control
-  # step (25 substeps of 2 ms) rather than a single-substep spike.
-  assert list(cfg.terminations) == ["time_out", "base_contact", "fell_over"]
+  # Only sustained vertical support ends the episode, allowing wall impacts
+  # and brief scrapes: 150 ms loaded inside a 200 ms window.
+  assert list(cfg.terminations) == [
+    "time_out",
+    "base_contact",
+    "fell_over",
+    "left_narrow_course",
+    "narrow_course_complete",
+  ]
   base_term = cfg.terminations["base_contact"]
   assert base_term.func is terminations.sustained_base_contact
   assert base_term.params["sensor_name"] == "base_ground_contact"
   assert base_term.params["force_threshold"] == pytest.approx(5.0)
   assert base_term.params["min_loaded_steps"] == XZ1_HIM_BASE_CONTACT_LOAD_STEPS
-  assert XZ1_HIM_BASE_CONTACT_HISTORY == round(0.05 / cfg.sim.mujoco.timestep)
-  assert XZ1_HIM_BASE_CONTACT_LOAD_STEPS == round(0.02 / cfg.sim.mujoco.timestep)
+  assert base_term.params["min_vertical_force_ratio"] == pytest.approx(0.7)
+  assert XZ1_HIM_BASE_CONTACT_HISTORY == round(0.20 / cfg.sim.mujoco.timestep)
+  assert XZ1_HIM_BASE_CONTACT_LOAD_STEPS == round(0.15 / cfg.sim.mujoco.timestep)
   base_sensor = sensors["base_ground_contact"]
   assert base_sensor.history_length == XZ1_HIM_BASE_CONTACT_HISTORY
   assert base_sensor.primary.pattern == XZ1_BASE_BODY
   assert base_sensor.secondary.pattern == "terrain"
+  assert base_sensor.reduce == "netforce"
 
   actor = cfg.observations["actor"].terms
   assert actor["base_ang_vel"].delay_max_lag == 2
@@ -687,6 +698,7 @@ def test_zero_action_holds_the_calibrated_stance():
   assert abs(roll) < 0.5
   assert data.ncon == 4
 
+
 def test_hip_mirror_symmetry_ignores_symmetric_splay_only():
   """Mirror-symmetric abduction is free; a left/right mismatch is charged."""
   names = ["FL_hip_joint", "FR_hip_joint", "RR_hip_joint", "RL_hip_joint"]
@@ -702,9 +714,7 @@ def test_hip_mirror_symmetry_ignores_symmetric_splay_only():
     ),
     find_joints=lambda _pattern: ([0, 1, 2, 3], names),
   )
-  env = SimpleNamespace(
-    num_envs=2, device="cpu", scene={"robot": asset}
-  )
+  env = SimpleNamespace(num_envs=2, device="cpu", scene={"robot": asset})
 
   cost = rewards.hip_mirror_symmetry(env)
 
@@ -713,13 +723,11 @@ def test_hip_mirror_symmetry_ignores_symmetric_splay_only():
   # Env 1 has FR at +0.05 instead of -0.10, so the front pair is off by 0.15.
   assert cost[1].item() == pytest.approx(0.15, abs=1e-6)
 
+
 def _base_sensor(loaded: torch.Tensor) -> MagicMock:
   """Fake contact sensor whose force history is loaded where ``loaded`` is 1."""
-  force_history = torch.where(
-    loaded.unsqueeze(1).unsqueeze(-1).bool(),
-    torch.full((*loaded.shape, 1, 1, 3), 20.0),
-    torch.zeros((*loaded.shape, 1, 1, 3)),
-  )
+  force_history = torch.zeros(loaded.shape[0], 1, loaded.shape[1], 3)
+  force_history[:, 0, :, 2] = loaded * 20.0
   sensor = MagicMock()
   sensor.data = SimpleNamespace(force_history=force_history)
   return sensor
@@ -749,10 +757,8 @@ def test_sustained_base_contact_counts_loaded_substeps_not_a_single_run():
   weak = torch.full((1, 25), 4.0)
   strong = torch.full((1, 25), 20.0)
   for force, expected in ((weak, False), (strong, True)):
-    force_history = force.unsqueeze(-1).unsqueeze(-1).expand(1, 1, 25, 1, 1)
-    force_history = force_history.reshape(1, 1, 25, 1).expand(1, 1, 25, 3) * torch.tensor(
-      [1.0, 0.0, 0.0]
-    )
+    force_history = torch.zeros(1, 1, 25, 3)
+    force_history[:, 0, :, 2] = force
     sensor = MagicMock()
     sensor.data = SimpleNamespace(force_history=force_history)
     env = SimpleNamespace(
@@ -761,3 +767,36 @@ def test_sustained_base_contact_counts_loaded_substeps_not_a_single_run():
     env.extras = {}
     got = bool(terminations.sustained_base_contact(env, min_loaded_steps=10).any())
     assert got is expected
+
+
+def test_base_contact_distinguishes_wall_impacts_from_trunk_support():
+  cfg = Nazarite_HIM_Complex_Terrain_XZ1()
+  term = cfg.terminations["base_contact"]
+  history = torch.zeros(6, 1, XZ1_HIM_BASE_CONTACT_HISTORY, 3)
+  # Horizontal wall impact, wall with friction, upward/downward floor support,
+  # and a trunk resting on the competition's 20 degree slope.
+  history[0, :, :, 0] = 200.0
+  history[1, :, :, :] = torch.tensor([200.0, 0.0, 30.0])
+  history[2, :, :, 2] = 20.0
+  history[3, :, :, 2] = -20.0
+  history[4, :, :, :] = torch.tensor(
+    [20.0 * math.sin(math.radians(20.0)), 0.0, 20.0 * math.cos(math.radians(20.0))]
+  )
+  # A short scrape has 74 loaded substeps, below the configured 75.
+  history[5, :, : XZ1_HIM_BASE_CONTACT_LOAD_STEPS - 1, 2] = 20.0
+  sensor = _contact_sensor(force_history=history)
+  env = SimpleNamespace(
+    num_envs=6,
+    device="cpu",
+    scene={"base_ground_contact": sensor},
+    extras={"log": {}},
+  )
+  torch.testing.assert_close(
+    term.func(env, **term.params),
+    torch.tensor([False, False, True, True, True, False]),
+  )
+  # Interrupted support still triggers at exactly 75 substeps in the window.
+  history[5].zero_()
+  history[5, :, :, 2] = 20.0
+  history[5, :, ::4, 2] = 0.0
+  assert term.func(env, **term.params)[5].item()

@@ -61,9 +61,10 @@ def test_generated_terrain_groups_and_geometry_budget():
   assert set(model.geom_type).issubset(
     {mujoco.mjtGeom.mjGEOM_BOX, mujoco.mjtGeom.mjGEOM_MESH}
   )
-  # One closed ramp prism per difficulty row; everything else is a box.
+  # Wide and narrow ramps each use one closed prism per difficulty row;
+  # everything else remains boxes, including the narrow staircase.
   assert np.count_nonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_MESH) == (
-    terrain_cfg.num_rows
+    2 * terrain_cfg.num_rows
   )
   assert model.ngeom < 2200
   assert generator.terrain_origins.shape == (
@@ -85,8 +86,7 @@ def test_generated_terrain_groups_and_geometry_budget():
   wall_model = wall_spec.compile()
   assert max(wall_model.geom_size[:, 2]) == pytest.approx(0.15)  # half height
 
-  # The ramp spans the whole patch in y so it cannot be walked around, and its
-  # last row reaches the tallest, steepest form.
+  # The full-width ramp's last row reaches the tallest, steepest form.
   ramp = terrain_cfg.sub_terrains["trapezoid_ramp"]
   ramp_spec = mujoco.MjSpec()
   ramp_spec.worldbody.add_body(name="terrain")
@@ -104,7 +104,9 @@ def test_terrain_scan_groups_exclude_every_robot_geom():
   # Walk bodies only: the <default> block also declares geom templates, which
   # carry no group attribute and are never part of the compiled robot.
   robot_geoms = [
-    geom.get("group", "0") for body in root.iter("body") for geom in body.findall("geom")
+    geom.get("group", "0")
+    for body in root.iter("body")
+    for geom in body.findall("geom")
   ]
   assert robot_geoms, "the XZ1 XML should contain geoms"
   assert "0" not in robot_geoms

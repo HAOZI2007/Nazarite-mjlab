@@ -6,7 +6,7 @@ import os
 import time
 import warnings
 from dataclasses import fields
-from typing import Any
+from typing import Any, cast
 
 import torch
 from tensordict import TensorDict
@@ -54,7 +54,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             raise ValueError(
                 f"Go2 World Model prop_dim must be 33, got {wm_cfg.prop_dim}"
             )
-        self.world_model = WMPWorldModel(wm_cfg).to(self.device)
+        self.world_model = WMPWorldModel(wm_cfg, device=self.device)
         self.world_model_optimizer = self.world_model.optimizer
         chunk = int(wm_cfg.action_chunk)
         if chunk < 1:
@@ -135,7 +135,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             )
         return depth.to(self.device)
 
-    def _wm_chunk_buffers(self, device: torch.device) -> None:
+    def _wm_chunk_buffers(self, device: torch.device | str) -> None:
         """Create the action-fold buffers once, for training and inference alike."""
         chunk = int(self._wm_runtime_cfg["action_chunk"])
         # Compare ``torch.device`` objects, never a device with a string: the
@@ -149,6 +149,10 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         # playback-only (or by a test double) may never have run ``__init__``.
         hist = getattr(self, "_wm_action_hist", None)
         if hist is not None and hist.device == target and hist.shape[1] == chunk:
+            if not hasattr(self, "_wm_pending_reset"):
+                self._wm_pending_reset = torch.zeros(
+                    self.env.num_envs, dtype=torch.bool, device=target
+                )
             return
         self._wm_action_hist = torch.zeros(
             (self.env.num_envs, chunk, self.env.num_actions), device=target
@@ -158,6 +162,23 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         )
         self._wm_step_index = 0
         self._wm_bad_features = 0
+        self._wm_pending_reset = torch.zeros(
+            self.env.num_envs, dtype=torch.bool, device=target
+        )
+
+    def _mark_wm_resets(self, dones: torch.Tensor) -> None:
+        """Invalidate old-episode memory immediately, even between camera frames."""
+        self._wm_chunk_buffers(dones.device)
+        assert self._wm_action_hist is not None
+        assert self._wm_feature is not None
+        reset = dones.bool()
+        self._wm_pending_reset |= reset
+        self._wm_action_hist[reset] = 0.0
+        self._wm_feature[reset] = 0.0
+        if self._wm_state is not None:
+            initial = self.world_model.dynamics.initial(self.env.num_envs)
+            for key, value in self._wm_state.items():
+                value[reset] = initial[key][reset]
 
     def _fold_wm_action(
         self,
@@ -165,7 +186,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         prop: torch.Tensor,
         action: torch.Tensor,
         is_first: torch.Tensor,
-        device: torch.device,
+        device: torch.device | str,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Fold one policy action into the current chunk, stepping the WM when full.
 
@@ -178,6 +199,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         self._wm_chunk_buffers(device)
         assert self._wm_action_hist is not None
         assert self._wm_feature is not None
+        self._wm_pending_reset |= is_first.bool()
         chunk = int(self._wm_runtime_cfg["action_chunk"])
         slot = self._wm_step_index % chunk
         self._wm_action_hist[:, slot].copy_(action)
@@ -185,6 +207,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         # The first observation of a run has no history to fold, so it flushes a
         # partial chunk instead of leaving the policy blind for a full interval.
         if slot + 1 != chunk and self._wm_state is not None:
+            self._wm_feature[self._wm_pending_reset] = 0.0
             return self._wm_feature, None
         stacked = self._wm_action_hist.reshape(self.env.num_envs, -1)
         # Sanitize before the encoder sees them: an infinite joint velocity would
@@ -193,10 +216,12 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             prop, nan=0.0, posinf=_WM_PROP_LIMIT, neginf=-_WM_PROP_LIMIT
         ).clamp(-_WM_PROP_LIMIT, _WM_PROP_LIMIT)
         image = torch.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
+        self._wm_last_first = self._wm_pending_reset.clone()
         self._wm_state = self.world_model.observe_step(
-            image, prop, stacked, is_first, self._wm_state
+            image, prop, stacked, self._wm_last_first, self._wm_state
         )
-        feature = self.world_model.dynamics.feature(self._wm_state)
+        self._wm_pending_reset.zero_()
+        feature = self.world_model.dynamics.get_deter_feat(self._wm_state)
         if not bool(torch.isfinite(feature).all()):
             # Drop the history and hand the actor zeros for this interval: one
             # NaN feature becomes a NaN action, and from there a NaN policy.
@@ -243,7 +268,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                 prop,
                 stacked,
                 self._wm_prev_reward,
-                self._wm_is_first,
+                self._wm_last_first,
             )
             self._wm_is_first.zero_()
 
@@ -281,6 +306,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         """One discriminator step per iteration, on this iteration's transitions."""
         if not self._amp_pairs:
             return {}
+        assert self.amp is not None
         current = torch.cat([pair[0] for pair in self._amp_pairs], dim=0)
         following = torch.cat([pair[1] for pair in self._amp_pairs], dim=0)
         valid = torch.cat([pair[2] for pair in self._amp_pairs], dim=0)
@@ -312,6 +338,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         updates = self._wm_runtime_cfg["pretrain_updates"]
         if updates <= 0:
             return {}
+        assert self.replay is not None
         values: list[dict[str, float]] = []
         for _ in range(updates):
             if not self.replay.can_sample(self._wm_runtime_cfg["batch_length"]):
@@ -370,7 +397,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         total_it = start_it + num_learning_iterations
 
         for it in range(start_it, total_it):
-            self.env.unwrapped.wmp_learning_iteration = it
+            cast(Any, self.env.unwrapped).wmp_learning_iteration = it
             start = time.time()
             with torch.inference_mode():
                 for _ in range(self.cfg["num_steps_per_env"]):
@@ -382,6 +409,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                     rewards = rewards.to(self.device)
                     dones = dones.to(self.device)
                     if self.amp is not None:
+                        assert self._amp_prev is not None
                         amp_now = next_obs["amp"].to(self.device)
                         # Deliberately *not* scaled by ``step_dt``. The reward
                         # manager folds dt into every task term, and the
@@ -408,15 +436,18 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                     self.logger.process_env_step(
                         rewards, dones, extras, self.alg.intrinsic_rewards
                     )
-                    self._wm_prev_action.copy_(actions.to(self.device))
+                    self._wm_prev_action.copy_(
+                        actions.to(self.device).clamp(-10.0, 10.0)
+                    )
                     self._wm_prev_action[dones.bool()] = 0.0
                     if dones.any():
+                        self._mark_wm_resets(dones)
                         # A reset starts a new chunk: folding the previous
                         # episode's actions into it would feed the dynamics model
                         # a transition that never happened.
                         self._wm_action_hist[dones.bool()] = 0.0
                     self._wm_prev_reward.copy_(rewards)
-                    self._wm_is_first.copy_(dones.float())
+                    self._wm_is_first.logical_or_(dones.bool())
                     obs = next_obs
                     policy_obs = self._encode_current_observation(obs)
                 self.alg.compute_returns(policy_obs)
@@ -494,17 +525,27 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
             self.world_model_optimizer.state_dict()
         )
         checkpoint["world_model_config"] = vars(self.world_model.cfg)
+        checkpoint["world_model_implementation"] = self.world_model.implementation
         if self.amp is not None:
             checkpoint["amp_state_dict"] = self.amp.state_dict()
         torch.save(checkpoint, path)
 
     def load(self, path, load_cfg=None, strict=True, map_location=None):
-        infos = super().load(path, load_cfg, strict, map_location)
         checkpoint = torch.load(
             path, map_location=map_location or self.device, weights_only=False
         )
+        if (
+            checkpoint.get("world_model_implementation")
+            != self.world_model.implementation
+        ):
+            raise RuntimeError(
+                "This runner now uses wmp_go1's reference Dreamer World Model. "
+                "The checkpoint uses an incompatible WM implementation; start "
+                "a new WMP run instead of loading compact-model weights."
+            )
         if "world_model_state_dict" not in checkpoint:
             raise KeyError("Checkpoint does not contain world_model_state_dict")
+        infos = super().load(path, load_cfg, strict, map_location)
         try:
             self.world_model.load_state_dict(
                 checkpoint["world_model_state_dict"], strict=strict
@@ -512,10 +553,8 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         except RuntimeError as error:
             raise RuntimeError(
                 "World model weights do not fit this runner's configuration. The "
-                "most likely cause is a checkpoint trained before action chunking: "
-                "its RSSM consumed one 12-dim action per step, while the current "
-                "config folds an action_chunk of camera-interval actions into a "
-                "single transition. Retrain the stage instead of resuming it."
+                "reference Dreamer architecture and folded action dimensions "
+                "must match. Start a new WM run for incompatible configurations."
             ) from error
         if load_cfg is None or load_cfg.get("load_optimizer", True):
             state = checkpoint.get("world_model_optimizer_state_dict")
@@ -562,6 +601,7 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
         # Inference owns its own fold buffers so a runner that was never trained
         # in this process (a checkpoint loaded for playback) still works.
         self._wm_chunk_buffers(target_device)
+        self._wm_pending_reset.fill_(True)
         first = torch.ones(self.env.num_envs, device=target_device)
 
         def policy(
@@ -583,6 +623,8 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                 first if is_first is None else is_first.to(target_device).float()
             )
             with torch.inference_mode():
+                if reset_mask.any():
+                    self._mark_wm_resets(reset_mask)
                 # Same fold-and-hold path as training. The play loop used to step
                 # the world model with a single 12-dim action, which crashed once
                 # the network learned to expect a folded 5x12 camera interval.
@@ -596,18 +638,20 @@ class WMPHIMOnPolicyRunner(HIMOnPolicyRunner):
                 augmented = obs.to(target_device).clone()
                 augmented["world_model_feature"] = feature
                 actions = self.alg.get_policy().act_inference(augmented)
-            prev_action.copy_(actions)
+            prev_action.copy_(actions.clamp(-10.0, 10.0))
             first = torch.zeros_like(first)
             return actions
 
-        def reset() -> None:
+        def reset(dones: torch.Tensor | None = None) -> None:
             nonlocal first
-            self._wm_state = None
-            self._wm_step_index = 0
-            if self._wm_action_hist is not None:
-                self._wm_action_hist.zero_()
-            prev_action.zero_()
-            first = torch.ones_like(first)
+            mask = (
+                torch.ones_like(first, dtype=torch.bool)
+                if dones is None
+                else (dones.to(target_device).bool())
+            )
+            self._mark_wm_resets(mask)
+            prev_action[mask] = 0.0
+            first[mask] = 1.0
 
         policy.reset = reset  # type: ignore[attr-defined]
         return policy

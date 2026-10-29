@@ -134,6 +134,27 @@ def test_camera_update_interval_throttles_rendering(device):
   torch.testing.assert_close(sensor.data.depth, rendered, rtol=0, atol=1e-6)
 
 
+def test_force_render_replaces_cached_frame_without_physics_step(device):
+  cfg = CameraSensorCfg(
+    name="test_cam",
+    camera_name="world/overhead_cam",
+    width=32,
+    height=24,
+    data_types=("depth",),
+    update_interval=5,
+  )
+  scene, sim = _make_scene_and_sim(device, sensors=(cfg,))
+  sim.forward()
+  sim.sense()
+  sensor = scene["test_cam"]
+  rendered = sensor.data.depth.clone()
+  time_before = sim.data.time.clone()
+  scene.sensor_context.get_depth(sensor.camera_idx).fill_(12345.0)
+  sim.sense(force_render=True)  # Off the normal 5-sense-step cadence.
+  torch.testing.assert_close(sensor.data.depth, rendered)
+  torch.testing.assert_close(sim.data.time.clone(), time_before)
+
+
 def test_camera_default_render_interval(device):
   """Cameras render every sense step unless update_interval is raised."""
   cam_cfg = CameraSensorCfg(

@@ -1,5 +1,11 @@
 # Nazarite Go2 Sim2Sim
 
+XZ1 HIM + Robocon2027 场景和手柄启动见 [XZ1 操作说明](XZ1_ROBOCON.md)。
+XZ1 HIM + WMP 视觉学生（actor + World Model）见
+[XZ1 WMP sim2sim 操作说明](XZ1_WMP_ROBOCON.md)。
+XZ1 特权地形教师（默认 stage2_fixed_curriculum/model_2499.pt）见
+[XZ1 教师 sim2sim 操作说明](XZ1_TEACHER_ROBOCON.md)。
+
 `sim2sim/` 是 Nazarite Go2 策略的独立 MuJoCo 推理与可视化程序。它不重新
 创建 mjlab 的 ManagerBased 环境，而是直接读取 Go2 XML，构造一个简化平面，
 加载已经训练好的 actor，然后以和训练一致的控制频率驱动机器人。

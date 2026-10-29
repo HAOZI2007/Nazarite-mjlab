@@ -186,7 +186,7 @@ def test_nonfinite_feature_is_zeroed_and_a_persistent_failure_raises() -> None:
     nan_feature = torch.full((NUM_ENVS, runner.world_model.feature_dim), float("nan"))
 
     # Never call through a real dynamics model: this is the failure being tested.
-    runner.world_model.dynamics.feature = lambda state: nan_feature  # type: ignore[method-assign]
+    runner.world_model.dynamics.get_deter_feat = lambda state: nan_feature
 
     out = _step(runner, 0.1)
     assert torch.equal(out, torch.zeros_like(out))
@@ -198,3 +198,26 @@ def test_nonfinite_feature_is_zeroed_and_a_persistent_failure_raises() -> None:
     assert runner._wm_bad_features == _WM_MAX_BAD_FEATURES
     with pytest.raises(RuntimeError, match="non-finite features"):
         _step(runner, 0.1)
+
+
+def test_reset_between_camera_frames_clears_memory_and_stays_pending():
+    runner = _runner()
+    _step(runner, 0.1)
+    unaffected = runner._wm_feature[1].clone()
+    _step(runner, 0.2)
+    runner._mark_wm_resets(torch.tensor([True, False]))
+    assert runner._wm_feature[0].count_nonzero() == 0
+    assert runner._wm_action_hist[0].count_nonzero() == 0
+    initial = runner.world_model.dynamics.initial(NUM_ENVS)
+    for key in initial:
+        torch.testing.assert_close(runner._wm_state[key][0], initial[key][0])
+    torch.testing.assert_close(runner._wm_feature[1], unaffected)
+    _step(runner, 0.3)
+    assert runner._wm_feature[0].count_nonzero() == 0
+    assert len(runner.replay.frames) == 1
+    # A later control step with no done must not erase the previous reset.
+    runner._wm_is_first.zero_()
+    _step(runner, 0.4)
+    _step(runner, 0.5)
+    assert runner.replay.frames[-1][4].tolist() == [True, False]
+    assert not runner._wm_pending_reset.any()

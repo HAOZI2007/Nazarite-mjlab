@@ -76,11 +76,13 @@ class HIMOnPolicyRunner(OnPolicyRunner):
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
         for it in range(start_it, total_it):
+            self._rollout_iteration = it
             start = time.time()
             action_peak = torch.zeros((), device=self.device)
             action_counts = torch.zeros(3, device=self.device)
             with torch.inference_mode():
                 for step in range(self.cfg["num_steps_per_env"]):
+                    self._rollout_step = step
                     if guard is not None:
                         guard.iteration, guard.step = it, step
                         guard.remember(observations=obs)
@@ -133,6 +135,9 @@ class HIMOnPolicyRunner(OnPolicyRunner):
                             collect_time=collect_time, learn_time=time.time() - start,
                             loss_dict=loss_dict, learning_rate=self.alg.learning_rate,
                             action_std=self.alg.get_policy().output_std, rnd_weight=None)
+            diagnostics = getattr(self, "_log_training_diagnostics", None)
+            if diagnostics is not None:
+                diagnostics(it)
             if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
         if self.logger.writer is not None:
@@ -170,6 +175,14 @@ class HIMOnPolicyRunner(OnPolicyRunner):
         env_ids = bad.reshape(-1).nonzero(as_tuple=False).flatten()
         if env_ids.numel() == 0:
             return
+        capture = getattr(self, "_record_nonfinite_envs", None)
+        if capture is not None:
+            # The application may have captured terminal evidence before an
+            # automatic reset. Persist it before another recovery overwrites it.
+            try:
+                capture(env_ids, next_obs)
+            except Exception as exc:
+                warnings.warn(f"Non-finite scene capture failed: {exc}", stacklevel=2)
         self._nan_recoveries += int(env_ids.numel())
         step_log = extras.get("log") if isinstance(extras, dict) else None
         result = unwrapped.reset(env_ids=env_ids.to(unwrapped.device))

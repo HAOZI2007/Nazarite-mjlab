@@ -5,8 +5,49 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Fixed
+^^^^^
+
+- XZ1 teacher data collection preassigns per-environment episode quotas,
+  covers all ten obstacle rows by default, and records stable traversal,
+  failure and timeout outcomes with per-row collection quality summaries.
+  Finished environments no longer censor slow episodes or retain unused frames.
+  Collection and evaluation use the actual bridge landing platform width,
+  while keeping narrow corridor checks until all feet clear the bridge.
+
+- XZ1 gap failures match actual foot/pit-floor collision pairs across all
+  difficulty rows, excluding platform sidewalls and stale contact slots.
+  Teacher warm starts retain weights with a fresh v4 curriculum contract.
+  XZ1 evaluation preassigns per-environment episode quotas to include slow
+  trials, and supports exact training rows with ``--levels``/``--all-levels``.
+
+- XZ1 WMP courses uniformly revisit difficulty rows after mastering the highest
+  row, following reference WMP without changing terrain type or sharing streaks.
+  Teacher curriculum contracts reject exact resume across this policy change;
+  existing weights remain usable through a fresh-curriculum warm start.
+
+- XZ1 WMP courses keep fixed terrain columns and restart at row zero.
+  Adaptive DELTA sampling now preserves independent rows and success/failure
+  streaks per environment and terrain type. Teacher logs include actual
+  episode success/timeout counts by original terrain type and difficulty row.
+  Non-finite recovery saves pre-reset root/joint state and named contact pairs
+  without changing collision or solver settings.
+
 Added
 ^^^^^
+
+- Added XZ1 frozen-teacher depth collection and offline WMP pretraining with
+  episode files, held-out terrain seeds, future-image baselines and a diagnostic
+  terrain-latent probe. Evaluation now supports seed/speed grids, reset jitter
+  and explicitly labelled privileged course steering. ``Simulation.sense`` can
+  force a current camera frame without advancing physics or policy histories.
+  XZ1 collection maps Warp's zero-valued depth misses to the far clip.
+
+- Added independent XZ1 HIM privileged-terrain teacher and fixed evaluation
+  tasks. The teacher uses Extreme Parkour's 132-point scan and 128/64/32
+  encoder, supports weight-only HIM warm starts, and exports both history
+  and oracle scan inputs. A headless evaluator counts completed landings
+  instead of treating curriculum advancement as obstacle success.
 
 - Added ``CameraSensorCfg.update_interval`` so a camera sensor can render every
   N sense steps instead of every step. Skipped steps reuse the last rendered
@@ -16,6 +57,44 @@ Added
 
 Changed
 ^^^^^^^
+
+- XZ1 scan-teacher, depth collection and visual-student environments now
+  use nine terrain types: flat, wall, narrow stairs/ramp, stepping stones,
+  single beam, low frame, hollow tire array and repeated gaps. New courses have
+  centered resets, traversal-based curriculum and invalid-ground checks. The
+  teacher accepts weight-only warm starts from an existing scan teacher.
+  The foundation HIM task retains its original seven terrain types, sampling
+  proportions and curriculum, independently of the WMP obstacle courses.
+
+- WMP now uses the vendored ``wmp_go1-main`` Dreamer WorldModel, including its
+  image/proprioceptive reconstruction distributions, channel LayerNorm, learned
+  RSSM initial state, unimix and native optimizer. XZ1 pretraining and the Go2
+  runner reject older compact-model checkpoints; recorded datasets remain usable.
+
+- WMP retains resets until the next world-model observation, immediately clears
+  reset environments' recurrent features and action history, and records clipped
+  policy commands. World-model updates reject non-finite losses or gradients.
+
+- XZ1 HIM enables a 0.20 pose reward referenced to the initial stance, with
+  tighter hip standard deviations and terrain-dependent leg tolerances.
+  High-wall environments receive exactly zero pose reward; actuator stance
+  precompensation and the actor observation layout are preserved.
+
+- XZ1 HIM tightens ordinary-terrain hip restraint with a 0.15 rad soft
+  allowance, a weak all-angle baseline and stronger excess-angle cost. Narrow
+  stairs and ramps retain 0.80 m width at every height level and at least
+  25 percent combined sampling probability. Loaded feet receive a soft
+  lateral edge penalty; swing feet and high-wall rewards are unaffected.
+
+- XZ1 HIM adds straight narrow stairs and ramps with curriculum widths down to
+  0.80 m, centered resets, corridor commands and traversal checks. Hip restraint
+  now permits normal abduction and fades smoothly with maneuver commands while
+  retaining the original high-wall cost. Action-rate regularization is mildly
+  stronger; actuator gains, action scales and joint limits are preserved.
+
+- XZ1 HIM now distinguishes sustained vertical trunk support from horizontal
+  wall impacts before resetting, and its terrain curriculum reaches 0.30 m
+  walls and 0.36 m ramps with 20 degree slopes and 0.80 m summit decks.
 
 - Updated the XZ1 HIM task with current-step self-collision accounting,
   gait-synchronized foot air time, speed-dependent posture tracking,

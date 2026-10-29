@@ -1,6 +1,7 @@
 """Nazarite curriculum hooks."""
 
 import math
+from collections.abc import Callable
 
 import torch
 
@@ -90,11 +91,15 @@ def terrain_levels_delta(
     adaptive_sampling_temperature: float = 1.0,
     adaptive_warmup_episodes: int = 20,
     type_success_ema_alpha: float = 0.05,
+    success_filter: Callable | None = None,
+    type_sampling_minimums: dict[str, float] | None = None,
+    randomize_completed_levels: bool = False,
 ):
     """DELTA curriculum with a gentle, type-aware sparse-terrain branch.
 
-    This hook runs immediately before an automatic reset.  The counters are kept
-    per environment, while the terrain row is changed directly. Continuous
+    This hook runs immediately before an automatic reset. State is kept per
+    environment AND terrain type, including when adaptive sampling changes the
+    assigned column. Continuous
     terrains use the normal two-success/three-failure rule. Sparse terrains use
     a shorter early success distance and a conservative level cap until the
     residual policy demonstrates repeatable traversals.
@@ -102,6 +107,10 @@ def terrain_levels_delta(
     Flat tiles are excluded from promotion and demotion.  Distance travelled
     on flat ground says nothing about obstacle capability, yet counting it as
     success lets the mean level climb while the sparse terrains stay impossible.
+    Optional type_sampling_minimums reserve exposure to selected terrain types;
+    the remaining probability budget still follows adaptive weakness sampling.
+    With randomize_completed_levels, passing the highest allowed row samples
+    uniformly from all allowed rows of the SAME type, as in reference WMP.
     """
     if success_streak_length < 1 or failure_streak_length < 1:
         raise ValueError("Curriculum streak lengths must be positive.")
@@ -115,6 +124,10 @@ def terrain_levels_delta(
     assert command is not None
     terrain_names = list(generator.sub_terrains.keys())
     num_terrain_types = len(terrain_names)
+    if env_ids is None or isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[
+            slice(None) if env_ids is None else env_ids
+        ]
 
     success_streak = getattr(env, "_delta_success_streak", None)
     failure_streak = getattr(env, "_delta_failure_streak", None)
@@ -126,9 +139,31 @@ def terrain_levels_delta(
     assert isinstance(success_streak, torch.Tensor)
     assert isinstance(failure_streak, torch.Tensor)
 
+    # Keep each skill's row and streaks independent. Unvisited types start at
+    # row zero; only the environment's initial assigned type inherits its row.
+    bank = getattr(env, "_delta_terrain_state", None)
+    if bank is None:
+        bank = torch.zeros(
+            env.num_envs,
+            num_terrain_types,
+            3,
+            dtype=torch.long,
+            device=env.device,
+        )
+        all_ids = torch.arange(env.num_envs, device=env.device)
+        bank[all_ids, terrain.terrain_types, 0] = terrain.terrain_levels
+        bank[all_ids, terrain.terrain_types, 1] = success_streak
+        bank[all_ids, terrain.terrain_types, 2] = failure_streak
+        env._delta_terrain_state = bank
+    current_types = terrain.terrain_types[env_ids]
+    success_streak[env_ids] = bank[env_ids, current_types, 1]
+    failure_streak[env_ids] = bank[env_ids, current_types, 2]
+
     if env.common_step_counter == 0:
         success_streak[env_ids] = 0
         failure_streak[env_ids] = 0
+        bank[env_ids, current_types, 0] = terrain.terrain_levels[env_ids]
+        bank[env_ids, current_types, 1:] = 0
         levels = terrain.terrain_levels.float()
         return {"mean": levels.mean(), "max": levels.max()}
 
@@ -190,8 +225,7 @@ def terrain_levels_delta(
         )
         crossing_threshold = wall_far_face_from_spawn + high_wall_crossing_clearance
         root_x_from_spawn = (
-            asset.data.root_link_pos_w[env_ids, 0]
-            - env.scene.env_origins[env_ids, 0]
+            asset.data.root_link_pos_w[env_ids, 0] - env.scene.env_origins[env_ids, 0]
         )
         crossed_wall = root_x_from_spawn >= crossing_threshold
         success = torch.where(
@@ -227,8 +261,7 @@ def terrain_levels_delta(
         )
         crossing_threshold = tire_far_edge_from_spawn + tire_array_crossing_clearance
         root_x_from_spawn = (
-            asset.data.root_link_pos_w[env_ids, 0]
-            - env.scene.env_origins[env_ids, 0]
+            asset.data.root_link_pos_w[env_ids, 0] - env.scene.env_origins[env_ids, 0]
         )
         crossed_tire_array = root_x_from_spawn >= crossing_threshold
         success = torch.where(
@@ -236,8 +269,13 @@ def terrain_levels_delta(
             active & ~terminated & crossed_tire_array,
             success,
         )
+    # Optional task-specific traversal validation (e.g. a narrow support corridor).
+    # Defaults preserve the shared curriculum's existing wall/other task behavior.
+    if success_filter is not None:
+        success = success_filter(env, env_ids, success)
     success_for_stats = success
     exclude_flat = bool(flat_terrain_name) and flat_terrain_name in terrain_names
+    flat = torch.zeros_like(success)
     if exclude_flat:
         flat = terrain.terrain_types[env_ids] == terrain_names.index(flat_terrain_name)
         success = success & ~flat
@@ -304,21 +342,30 @@ def terrain_levels_delta(
         up_sparse = sparse[up_ids]
         regular = up_ids[~highest]
         new_levels[regular] += 1
-        # Sparse terrain stays at its cap once it is mastered.  Continuous terrain
-        # retains the paper-style restart from a low/high row after reaching the
-        # final row.
+        # Reference WMP revisits every difficulty after mastering the last row.
+        # Keep legacy behavior for tasks that have not opted into this policy.
         sparse_high = up_ids[highest & up_sparse]
         normal_high = up_ids[highest & ~up_sparse]
         if normal_high.numel() > 0:
-            restart_low = torch.rand(len(normal_high), device=env.device) < 0.2
-            restart_high = torch.randint(
-                5, terrain.max_terrain_level, (len(normal_high),), device=env.device
-            )
-            new_levels[normal_high] = torch.where(
-                restart_low, torch.zeros_like(restart_high), restart_high
-            )
+            if randomize_completed_levels:
+                new_levels[normal_high] = torch.randint(
+                    terrain.max_terrain_level, (len(normal_high),), device=env.device
+                )
+            else:
+                restart_low = torch.rand(len(normal_high), device=env.device) < 0.2
+                restart_high = torch.randint(
+                    5, terrain.max_terrain_level, (len(normal_high),), device=env.device
+                )
+                new_levels[normal_high] = torch.where(
+                    restart_low, torch.zeros_like(restart_high), restart_high
+                )
         if sparse_high.numel() > 0:
-            new_levels[sparse_high] = max_allowed[sparse_high]
+            if randomize_completed_levels:
+                new_levels[sparse_high] = torch.randint(
+                    sparse_cap + 1, (len(sparse_high),), device=env.device
+                )
+            else:
+                new_levels[sparse_high] = max_allowed[sparse_high]
     new_levels = torch.where(move_down, torch.clamp(old_levels - 1, min=0), new_levels)
     new_levels = torch.minimum(new_levels, max_allowed)
     terrain.terrain_levels[env_ids] = new_levels
@@ -331,16 +378,53 @@ def terrain_levels_delta(
     base_proportions /= base_proportions.sum().clamp_min(1.0e-6)
     sampling_probabilities = base_proportions
     warmup_total = max(int(adaptive_warmup_episodes), 0) * num_terrain_types
-    if adaptive_type_sampling and int(type_episode_count.sum()) >= warmup_total:
+    adaptive_ready = (
+        adaptive_type_sampling and int(type_episode_count.sum()) >= warmup_total
+    )
+    if adaptive_ready:
         weakness = max(float(adaptive_sampling_floor), 0.0) + 1.0 - type_success_ema
         temperature = max(float(adaptive_sampling_temperature), 1.0e-6)
         sampling_probabilities = base_proportions * weakness.clamp_min(1.0e-6).pow(
             temperature
         )
         sampling_probabilities /= sampling_probabilities.sum().clamp_min(1.0e-6)
+    if type_sampling_minimums:
+        if (
+            set(type_sampling_minimums) - set(terrain_names)
+            or any(
+                not math.isfinite(value) or value < 0
+                for value in type_sampling_minimums.values()
+            )
+            or sum(type_sampling_minimums.values()) >= 1.0
+        ):
+            raise ValueError("Sampling minima must name terrains and sum to < 1.")
+        minimums = sampling_probabilities.new_tensor(
+            [type_sampling_minimums.get(name, 0.0) for name in terrain_names]
+        )
+        slack = (sampling_probabilities - minimums).clamp_min(0.0)
+        sampling_probabilities = minimums + (1.0 - minimums.sum()) * (
+            slack / slack.sum().clamp_min(1.0e-6)
+        )
+    # Commit the completed type before drawing the next one. This also keeps
+    # interleaved failures on gap independent of successes on stairs.
+    success_streak[env_ids] = torch.where(
+        move_up, torch.zeros_like(success_streak[env_ids]), success_streak[env_ids]
+    )
+    failure_streak[env_ids] = torch.where(
+        move_down, torch.zeros_like(failure_streak[env_ids]), failure_streak[env_ids]
+    )
+    bank[env_ids, old_types, 0] = terrain.terrain_levels[env_ids]
+    bank[env_ids, old_types, 1] = success_streak[env_ids]
+    bank[env_ids, old_types, 2] = failure_streak[env_ids]
+    if adaptive_ready:
         terrain.terrain_types[env_ids] = torch.multinomial(
             sampling_probabilities, len(env_ids), replacement=True
         ).to(terrain.terrain_types.dtype)
+
+        new_types = terrain.terrain_types[env_ids]
+        terrain.terrain_levels[env_ids] = bank[env_ids, new_types, 0]
+        success_streak[env_ids] = bank[env_ids, new_types, 1]
+        failure_streak[env_ids] = bank[env_ids, new_types, 2]
 
         new_sparse = torch.zeros_like(terrain.terrain_types[env_ids], dtype=torch.bool)
         for terrain_index in sparse_indices:
@@ -354,12 +438,6 @@ def terrain_levels_delta(
     terrain.env_origins[env_ids] = terrain.terrain_origins[
         terrain.terrain_levels[env_ids], terrain.terrain_types[env_ids]
     ]
-    success_streak[env_ids] = torch.where(
-        move_up, torch.zeros_like(success_streak[env_ids]), success_streak[env_ids]
-    )
-    failure_streak[env_ids] = torch.where(
-        move_down, torch.zeros_like(failure_streak[env_ids]), failure_streak[env_ids]
-    )
 
     levels = terrain.terrain_levels.float()
     result = {"mean": levels.mean(), "max": levels.max()}

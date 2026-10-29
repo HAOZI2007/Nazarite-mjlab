@@ -529,7 +529,7 @@ class Simulation:
     self._sensor_context = ctx
     self.create_graph()
 
-  def sense(self) -> None:
+  def sense(self, *, force_render: bool = False) -> None:
     """Execute the sense pipeline: prepare -> graph -> finalize.
 
     Runs BVH refit, camera rendering, and raycasting in a single
@@ -538,7 +538,9 @@ class Simulation:
 
     Rendering is skipped on sense steps where no camera is due according to its
     ``update_interval``. Those steps keep the last rendered frame and launch the
-    sense graph without the render pass.
+    sense graph without the render pass. ``force_render`` obtains a current
+    camera frame after explicit resets or at a dataset sampling boundary;
+    it does not advance physics or observation histories.
     """
     if self._sensor_context is None:
       return
@@ -546,7 +548,7 @@ class Simulation:
     ctx = self._sensor_context
     ctx.prepare()
 
-    render = self._render_due(ctx.render_interval)
+    render = force_render or self._render_due(ctx.render_interval)
     with wp.ScopedDevice(self.wp_device):
       graph = self.sense_graph if render else self.sense_graph_skip_render
       if self.use_cuda_graph and graph is not None:

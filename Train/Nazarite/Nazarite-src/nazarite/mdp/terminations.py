@@ -13,23 +13,32 @@ def sustained_base_contact(
     sensor_name: str = "base_ground_contact",
     force_threshold: float = 5.0,
     min_loaded_steps: int = 10,
+    min_vertical_force_ratio: float = 0.7,
 ) -> torch.Tensor:
     """Terminate once the trunk has been carrying terrain load for a while.
 
     A belly slide drags the trunk across box edges, so the contact chatters:
     single substeps drop below the threshold and come back.  Requiring one
     unbroken run of loaded substeps would then never fire, which is why this
-    counts loaded substeps inside the sensor's history window instead.  With
-    the shipped 2 ms physics step and a 25 substep history, ten loaded substeps
-    is 20 ms of trunk load: long enough to exclude a stumble that presses the
-    body against a step for a single substep, short enough to end the episode
-    before a fallen robot learns to crawl on its belly.
+    counts loaded substeps inside the sensor's history window instead.
+
+    Use a ``reduce="netforce"`` sensor: its force history is in world coordinates.
+    Only predominantly vertical forces count as support; horizontal wall impacts
+    must not terminate an upright robot. The absolute z component handles either
+    contact-force sign convention. XZ1 uses 150 ms of support in a 200 ms window
+    to allow brief obstacle scrapes while still detecting sustained belly slides.
     """
+    if not 0.0 <= min_vertical_force_ratio <= 1.0:
+        raise ValueError("min_vertical_force_ratio must be in [0, 1].")
     sensor = env.scene[sensor_name]
     history = sensor.data.force_history
     if history is None:
         return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-    loaded = torch.linalg.vector_norm(history, dim=-1) > max(float(force_threshold), 0.0)
+    force_norm = torch.linalg.vector_norm(history, dim=-1)
+    vertical_force = history[..., 2].abs()
+    loaded = (vertical_force > max(float(force_threshold), 0.0)) & (
+        vertical_force >= min_vertical_force_ratio * force_norm
+    )
     # [B, N, H] -> any primary body contact counts as trunk load.
     loaded = loaded.any(dim=1)
     result = loaded.sum(dim=-1) >= max(int(min_loaded_steps), 1)
@@ -95,4 +104,4 @@ def fell_from_single_bridge(
     return fell
 
 
-__all__ = ["fell_from_single_bridge"]
+__all__ = ["fell_from_single_bridge", "sustained_base_contact"]

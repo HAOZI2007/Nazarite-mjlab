@@ -16,6 +16,8 @@ from .config import ACTION_DIM, FRAME_DIM, HISTORY_SIZE, OBS_DIM, OBSERVATION_NA
 class _HIMActor(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        self.register_buffer("obs_mean", torch.zeros(1, OBS_DIM))
+        self.register_buffer("obs_divisor", torch.ones(1, OBS_DIM))
         self.encoder = nn.Sequential(
             nn.Linear(OBS_DIM, 128), nn.ELU(),
             nn.Linear(128, 64), nn.ELU(),
@@ -32,13 +34,16 @@ class _HIMActor(nn.Module):
         frames = history.reshape(-1, HISTORY_SIZE, FRAME_DIM).clamp(-100.0, 100.0)
         frames[:, :, 35:47] = frames[:, :, 35:47].clamp(-10.0, 10.0)
         history = frames.flatten(start_dim=1)
+        history = (history - self.obs_mean) / self.obs_divisor
         encoded = self.encoder(history)
         latent = F.normalize(encoded[:, 3:], dim=-1, p=2.0)
         return self.mlp(torch.cat((history[:, :FRAME_DIM], encoded[:, :3], latent), dim=-1)).clamp(-10.0, 10.0)
 
 
 class HIMPolicy:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, joint_names: list[str] | None = None
+    ) -> None:
         path = Path(path).expanduser().resolve()
         self.actor: _HIMActor | None = None
         self.onnx: PolicyRunner | None = None
@@ -48,6 +53,7 @@ class HIMPolicy:
             self.onnx = PolicyRunner(
                 path, expected_obs_dim=OBS_DIM,
                 expected_observation_names=OBSERVATION_NAMES,
+                expected_joint_names=joint_names,
             )
             if self.onnx.session is None:
                 raise RuntimeError("HIM ONNX session was not initialized")
@@ -61,6 +67,17 @@ class HIMPolicy:
         if not isinstance(state, dict):
             raise TypeError("HIM checkpoint is missing actor_state_dict")
         actor = _HIMActor()
+        if "obs_normalizer._mean" in state:
+            mean = state["obs_normalizer._mean"]
+            std = state["obs_normalizer._std"]
+            if (
+                mean.shape != (1, OBS_DIM) or std.shape != (1, OBS_DIM)
+                or not torch.isfinite(mean).all() or not torch.isfinite(std).all()
+                or (std < 0).any()
+            ):
+                raise ValueError("Invalid HIM observation normalization statistics")
+            actor.obs_mean.copy_(mean)
+            actor.obs_divisor.copy_(std + 1e-2)
         actor.encoder.load_state_dict({
             key.removeprefix("estimator.encoder."): value
             for key, value in state.items() if key.startswith("estimator.encoder.")

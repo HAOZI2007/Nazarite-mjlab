@@ -37,14 +37,14 @@ def test_flat_action_dim_multiplies_the_chunk() -> None:
 def test_rssm_action_input_width_follows_the_chunk() -> None:
     cfg = _small_cfg(action_dim=12, action_chunk=5)
     model = WMPWorldModel(cfg)
-    linear = model.dynamics.input_layer[0]
+    linear = model.dynamics._img_in_layers[0]
     assert isinstance(linear, torch.nn.Linear)
     expected = cfg.stoch_groups * cfg.stoch_classes + cfg.flat_action_dim
     assert linear.in_features == expected
 
     single = WMPWorldModel(_small_cfg(action_dim=12, action_chunk=1))
-    assert isinstance(single.dynamics.input_layer[0], torch.nn.Linear)
-    assert single.dynamics.input_layer[0].in_features == (
+    assert isinstance(single.dynamics._img_in_layers[0], torch.nn.Linear)
+    assert single.dynamics._img_in_layers[0].in_features == (
         12 + cfg.stoch_groups * cfg.stoch_classes
     )
 
@@ -59,7 +59,7 @@ def test_observe_step_accepts_a_folded_action_sequence() -> None:
     is_first = torch.ones(batch, dtype=torch.bool)
 
     state = model.observe_step(image, prop, folded, is_first, None)
-    feature = model.dynamics.feature(state)
+    feature = model.dynamics.get_deter_feat(state)
     assert feature.shape == (batch, cfg.deter_dim)
 
     with pytest.raises(RuntimeError):

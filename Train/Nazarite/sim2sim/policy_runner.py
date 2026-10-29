@@ -50,7 +50,11 @@ class PolicyRunner:
         *,
         expected_obs_dim: int | None = None,
         expected_observation_names: list[str] | None = None,
+        expected_joint_names: list[str] | None = None,
     ):
+        self.expected_joint_names = (
+            JOINT_NAMES if expected_joint_names is None else expected_joint_names
+        )
         policy_path = Path(policy_path).expanduser().resolve()
         if not policy_path.is_file():
             raise FileNotFoundError(f"Policy not found: {policy_path}")
@@ -171,7 +175,7 @@ class PolicyRunner:
                 f"{exported_obs}"
             )
         exported_joints = metadata.get("joint_names")
-        if exported_joints and exported_joints.split(",") != JOINT_NAMES:
+        if exported_joints and exported_joints.split(",") != self.expected_joint_names:
             raise ValueError(
                 "Policy joint order does not match sim2sim: "
                 f"{exported_joints}"

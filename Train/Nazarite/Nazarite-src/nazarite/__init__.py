@@ -49,8 +49,41 @@ from .config.train_config.XZ1_env_cfgs import (
     Nazarite_HIM_Complex_Terrain_XZ1,
     Nazarite_Velocity_Flat_XZ1_WTW,
 )
+from .config.train_config.XZ1_env_cfgs.collect_env_cfg import (
+    Nazarite_WMP_HIM_Collect_XZ1,
+)
 from .config.train_config.XZ1_env_cfgs.him_rl_cfg import xz1_him_runner_cfg
+from .config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+    Nazarite_WMP_HIM_Eval_XZ1,
+    Nazarite_WMP_HIM_Teacher_XZ1,
+)
+from .config.train_config.XZ1_env_cfgs.teacher_rl_cfg import xz1_teacher_runner_cfg
 from .config.train_config.XZ1_env_cfgs.wtw_rl_cfg import xz1_wtw_runner_cfg
+from .rl.xz1_teacher import XZ1TerrainTeacherRunner
+
+register_mjlab_task(
+    task_id="Nazarite-WMP-HIM-Collect-XZ1",
+    env_cfg=Nazarite_WMP_HIM_Collect_XZ1(),
+    play_env_cfg=Nazarite_WMP_HIM_Collect_XZ1(play=True),
+    rl_cfg=xz1_teacher_runner_cfg(),
+    runner_cls=XZ1TerrainTeacherRunner,
+)
+
+register_mjlab_task(
+    task_id="Nazarite-WMP-HIM-Teacher-XZ1",
+    env_cfg=Nazarite_WMP_HIM_Teacher_XZ1(),
+    play_env_cfg=Nazarite_WMP_HIM_Teacher_XZ1(play=True),
+    rl_cfg=xz1_teacher_runner_cfg(),
+    runner_cls=XZ1TerrainTeacherRunner,
+)
+
+register_mjlab_task(
+    task_id="Nazarite-WMP-HIM-Eval-XZ1",
+    env_cfg=Nazarite_WMP_HIM_Eval_XZ1(),
+    play_env_cfg=Nazarite_WMP_HIM_Eval_XZ1(play=True),
+    rl_cfg=xz1_teacher_runner_cfg(),
+    runner_cls=XZ1TerrainTeacherRunner,
+)
 
 register_mjlab_task(
     task_id="Nazarite-WTW-Delta-Direct-Go2",
