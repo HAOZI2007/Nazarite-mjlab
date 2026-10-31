@@ -20,9 +20,9 @@ from .teacher import TeacherHeightScan, TeacherPolicy
 from .xz1_him import SCENE, XZ1IO
 
 RUN = (
-    ROOT / "logs/rsl_rl/xz1_wmp_him_teacher/2026-10-27_17-48-42_stage2_fixed_curriculum"
+    ROOT / "logs/rsl_rl/xz1_wmp_him_teacher/2026-10-30_10-01-18_height_single_10hz_from_him"
 )
-DEFAULT_POLICY = RUN / "model_2499.pt"
+DEFAULT_POLICY = RUN / "model_13100.pt"
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,7 +92,12 @@ def main() -> None:
 
     print(f"[XZ1 teacher] policy: {args.policy}")
     print(f"[XZ1 teacher] scene: {args.scene}")
-    print("[XZ1 teacher] actor50Hz / physics500Hz; HIM47x6 + privileged scan12x11")
+    print(
+        f"[XZ1 teacher] actor50Hz / physics500Hz; HIM47x6 + scan12x11 x{policy.scan_history_length} frames"
+    )
+    print(
+        f"[XZ1 teacher] scan input: {1 / getattr(policy, 'scan_update_period', 0.02):g} Hz"
+    )
     print("[XZ1 teacher] Oracle terrain scan; no depth camera or World Model input")
     started = time.perf_counter()
     try:
@@ -149,6 +154,7 @@ def main() -> None:
                 raise FloatingPointError("Non-finite simulation state")
             steps += 1
             if args.record is not None:
+                assert policy.scan_history is not None
                 records.append(
                     {
                         "t": steps * CONTROL_DT,
@@ -156,7 +162,8 @@ def main() -> None:
                         "command": command.tolist(),
                         "root": io.data.qpos[:7].tolist(),
                         "action": action.tolist(),
-                        "teacher_scan": scan.tolist(),
+                        "teacher_scan": policy.scan_history[-1].tolist(),
+                        "teacher_scan_history": policy.scan_history.tolist(),
                     }
                 )
             if viewer is not None:

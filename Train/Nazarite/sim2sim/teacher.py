@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import mujoco
@@ -11,6 +12,8 @@ from tensordict import TensorDict
 
 from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import SCAN_X, SCAN_Y
 from nazarite.rl.xz1_student import load_teacher
+
+from .config import CONTROL_DT
 
 
 class TeacherHeightScan:
@@ -63,10 +66,20 @@ class TeacherPolicy:
         # Loads the native training actor, including scan encoder and frozen
         # HIM/normalizer. The saved numerical contract is checked by this loader.
         self.actor = load_teacher(obs, path, device)
+        self.scan_history_length = self.actor.scan_history_length
+        self.scan_update_period = self.actor.scan_update_period
+        self.scan_update_steps = round(self.scan_update_period / CONTROL_DT)
+        if self.scan_update_steps < 1 or not math.isclose(
+            self.scan_update_steps * CONTROL_DT, self.scan_update_period, abs_tol=1e-9
+        ):
+            raise ValueError("Scan period must be a positive multiple of control dt")
         self.reset()
 
     def reset(self) -> None:
         self.last_action = np.zeros(12, dtype=np.float32)
+        self.scan_history = None
+        self.control_step = 0
+        self.last_scan_step = None
 
     @torch.inference_mode()
     def step(self, history: np.ndarray, scan: np.ndarray) -> np.ndarray:
@@ -79,10 +92,27 @@ class TeacherPolicy:
         # The sim2sim builder is current-first; the native actor accepts
         # oldest-first observation buffers and reverses them internally.
         frames = history.reshape(6, 47)[::-1].copy()
+        if self.last_scan_step is None or (
+            self.control_step - self.last_scan_step >= self.scan_update_steps
+        ):
+            if self.scan_history is None:
+                self.scan_history = np.repeat(
+                    scan[None], self.scan_history_length, axis=0
+                )
+            else:
+                self.scan_history[:-1] = self.scan_history[1:].copy()
+                self.scan_history[-1] = scan
+            self.last_scan_step = self.control_step
+        assert self.scan_history is not None
+        scan_input = (
+            self.scan_history[0].copy()
+            if self.scan_history_length == 1
+            else self.scan_history.copy()
+        )
         obs = TensorDict(
             {
                 "actor": torch.as_tensor(frames, device=self.device)[None],
-                "teacher_scan": torch.as_tensor(scan, device=self.device)[None],
+                "teacher_scan": torch.as_tensor(scan_input, device=self.device)[None],
             },
             batch_size=[1],
         )
@@ -90,4 +120,5 @@ class TeacherPolicy:
         if not np.isfinite(action).all():
             raise FloatingPointError("Non-finite teacher action")
         self.last_action = action
+        self.control_step += 1
         return action

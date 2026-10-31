@@ -54,10 +54,15 @@ from .config.train_config.XZ1_env_cfgs.collect_env_cfg import (
 )
 from .config.train_config.XZ1_env_cfgs.him_rl_cfg import xz1_him_runner_cfg
 from .config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+    XZ1_TEACHER_SCAN_HISTORY_LENGTH,
+    XZ1_TEACHER_SCAN_UPDATE_PERIOD,
     Nazarite_WMP_HIM_Eval_XZ1,
     Nazarite_WMP_HIM_Teacher_XZ1,
 )
-from .config.train_config.XZ1_env_cfgs.teacher_rl_cfg import xz1_teacher_runner_cfg
+from .config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
+    xz1_height_history_training_cfg,
+    xz1_teacher_runner_cfg,
+)
 from .config.train_config.XZ1_env_cfgs.wtw_rl_cfg import xz1_wtw_runner_cfg
 from .rl.xz1_teacher import XZ1TerrainTeacherRunner
 
@@ -71,9 +76,16 @@ register_mjlab_task(
 
 register_mjlab_task(
     task_id="Nazarite-WMP-HIM-Teacher-XZ1",
-    env_cfg=Nazarite_WMP_HIM_Teacher_XZ1(),
-    play_env_cfg=Nazarite_WMP_HIM_Teacher_XZ1(play=True),
-    rl_cfg=xz1_teacher_runner_cfg(),
+    env_cfg=Nazarite_WMP_HIM_Teacher_XZ1(
+        scan_history_length=XZ1_TEACHER_SCAN_HISTORY_LENGTH,
+        scan_update_period=XZ1_TEACHER_SCAN_UPDATE_PERIOD,
+    ),
+    play_env_cfg=Nazarite_WMP_HIM_Teacher_XZ1(
+        play=True,
+        scan_history_length=XZ1_TEACHER_SCAN_HISTORY_LENGTH,
+        scan_update_period=XZ1_TEACHER_SCAN_UPDATE_PERIOD,
+    ),
+    rl_cfg=xz1_height_history_training_cfg(),
     runner_cls=XZ1TerrainTeacherRunner,
 )
 

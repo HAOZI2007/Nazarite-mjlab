@@ -23,7 +23,7 @@ from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
 from nazarite.rl.wmp.actor import WMPHIMActorModel
 from nazarite.rl.wmp.world_model import WMPWorldModel, WMPWorldModelCfg
 from nazarite.rl.wmp.xz1_dataset import CONTRACT, sanitize_xz1_depth, xz1_wm_prop
-from nazarite.rl.xz1_teacher import XZ1TerrainTeacherActor
+from nazarite.rl.xz1_teacher import XZ1TerrainTeacherActor, teacher_scan_contract
 
 STUDENT_FORMAT = "xz1_wmp_action_student_v1"
 
@@ -53,6 +53,10 @@ def actor_kwargs():
     cfg = asdict(xz1_teacher_runner_cfg().actor)
     cfg.pop("class_name")
     cfg.pop("scan_group")
+    cfg.pop(
+        "scan_history_length"
+    )  # Visual students retain the single-frame teacher API.
+    cfg.pop("scan_update_period")
     return cfg
 
 
@@ -82,8 +86,17 @@ def load_teacher(obs, checkpoint, device):
     contract = (source.get("infos") or {}).get("him_numerics", {})
     if contract.get("frame_size") != 47 or contract.get("history_size") != 6:
         raise ValueError("Teacher requires the XZ1 47 x 6 HIM contract")
+    scan_contract = contract.get("teacher_scan", {})
+    scan_history_length = scan_contract.get("history_length", 1)
+    scan_update_period = scan_contract.get("update_period", 0.02)
     teacher = XZ1TerrainTeacherActor(
-        obs, {"actor": ["actor"]}, "actor", 12, **actor_kwargs()
+        obs,
+        {"actor": ["actor"]},
+        "actor",
+        12,
+        scan_history_length=scan_history_length,
+        scan_update_period=scan_update_period,
+        **actor_kwargs(),
     ).to(device)
     expected = {
         "version": 1,
@@ -94,14 +107,7 @@ def load_teacher(obs, checkpoint, device):
         "frame_size": teacher.num_one_step_obs,
         "export_history_order": "frame_major_current_first",
         "last_action": "clipped_policy_action_before_joint_scale_and_offset",
-        "teacher_scan": {
-            "points": 132,
-            "latent": 32,
-            "offset": 0.3,
-            "clip": [-1.0, 1.0],
-            "order": "x_major_y_minor",
-            "privileged_not_camera": True,
-        },
+        "teacher_scan": teacher_scan_contract(scan_history_length, scan_update_period),
     }
     if contract != expected:
         raise ValueError("Teacher numerical/scan contract differs")

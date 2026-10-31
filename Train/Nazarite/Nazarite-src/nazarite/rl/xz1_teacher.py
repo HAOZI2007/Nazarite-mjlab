@@ -2,11 +2,13 @@
 
 import copy
 import json
+import math
 from pathlib import Path
 from typing import cast
 
 import torch
 from rsl_rl.models.him_actor_model import HIMActorModel
+from rsl_rl.modules import MLP
 from tensordict import TensorDict
 from torch import nn
 
@@ -14,14 +16,54 @@ from nazarite.mdp.xz1_diagnostics import capture_failure_scenes
 from nazarite.rl.him_runner import HIMOnPolicyRunner
 
 
+def teacher_scan_contract(history_length=1, update_period=0.02):
+    contract = {
+        "points": 132,
+        "latent": 32,
+        "offset": 0.3,
+        "clip": [-1.0, 1.0],
+        "order": "x_major_y_minor",
+        "privileged_not_camera": True,
+    }
+    if history_length > 1:
+        contract.update(
+            {
+                "history_length": history_length,
+                "history_order": "oldest_first",
+                "latent_order": "current_first",
+                "history_dt": update_period,
+                "reset_fill": "repeat_first",
+            }
+        )
+    # Preserve the exact metadata of existing 50 Hz single/six-frame policies.
+    if update_period != 0.02:
+        contract["update_period"] = update_period
+    return contract
+
+
 class XZ1TerrainTeacherActor(HIMActorModel):
-    """Keep HIM unchanged; append a 32-D privileged terrain embedding.
+    """Keep HIM unchanged; append 32-D embeddings for each terrain frame.
 
     Reference: extreme-parkour/rsl_rl/modules/actor_critic.py, Actor.scan_encoder.
     Unlike the later visual student this teacher requires oracle height scans.
+    Raw temporal scans travel with the rollout observations so PPO can recompute
+    all embeddings with the same current encoder, without stale latent caches.
     """
 
-    def __init__(self, *args, scan_group: str = "teacher_scan", **kwargs):
+    def __init__(
+        self,
+        *args,
+        scan_group: str = "teacher_scan",
+        scan_history_length: int = 1,
+        scan_update_period: float = 0.02,
+        **kwargs,
+    ):
+        if scan_history_length < 1:
+            raise ValueError("scan_history_length must be positive")
+        self.scan_history_length = scan_history_length
+        if not math.isfinite(scan_update_period) or scan_update_period <= 0:
+            raise ValueError("scan_update_period must be finite and positive")
+        self.scan_update_period = scan_update_period
         super().__init__(*args, **kwargs)
         self.scan_group = scan_group
         self.scan_encoder = nn.Sequential(
@@ -32,6 +74,17 @@ class XZ1TerrainTeacherActor(HIMActorModel):
             nn.Linear(64, 32),
             nn.Tanh(),
         )
+        if self.scan_history_length > 1:
+            self.mlp = MLP(
+                self.num_one_step_obs
+                + 3
+                + self.estimator.num_latent
+                + 32 * self.scan_history_length,
+                self.distribution.input_dim,
+                kwargs.get("hidden_dims", (512, 256, 128)),
+                kwargs.get("activation", "elu"),
+            )
+            self.distribution.init_mlp_weights(self.mlp)
 
     @staticmethod
     def _actor_input_dim(input_dim: int) -> int:
@@ -40,11 +93,17 @@ class XZ1TerrainTeacherActor(HIMActorModel):
     def get_latent(self, obs: TensorDict, masks=None, hidden_state=None):
         latent = super().get_latent(obs, masks, hidden_state)
         scan = obs[self.scan_group]
-        if scan.ndim != 2 or scan.shape[-1] != 132:
+        expected = (
+            (132,) if self.scan_history_length == 1 else (self.scan_history_length, 132)
+        )
+        if tuple(scan.shape[1:]) != expected:
             raise ValueError(
-                f"Expected [batch, 132] teacher scan, received {scan.shape}"
+                f"Expected [batch, {expected}] teacher scan, received {scan.shape}"
             )
-        return torch.cat((latent, self.scan_encoder(scan)), dim=-1)
+        encoded = self.scan_encoder(scan)
+        if self.scan_history_length > 1:
+            encoded = encoded.flip(-2).flatten(-2)
+        return torch.cat((latent, encoded), dim=-1)
 
     def as_onnx(self, verbose: bool = False):
         del verbose
@@ -73,6 +132,7 @@ class _TeacherExport(nn.Module):
         self.frame_size = actor.num_one_step_obs
         self.history_dim = actor.obs_dim
         self.action_clip = actor.action_clip
+        self.scan_history_length = actor.scan_history_length
         self.register_buffer(
             "bounds", cast(torch.Tensor, actor.observation_bounds).detach().clone()
         )
@@ -82,12 +142,15 @@ class _TeacherExport(nn.Module):
         estimate = self.estimator_encoder(history)
         velocity = estimate[..., :3]
         latent = nn.functional.normalize(estimate[..., 3:], p=2.0, dim=-1)
+        terrain = self.scan_encoder(teacher_scan)
+        if self.scan_history_length > 1:
+            terrain = terrain.flip(-2).flatten(-2)
         inputs = torch.cat(
             (
                 history[..., : self.frame_size],
                 velocity,
                 latent,
-                self.scan_encoder(teacher_scan),
+                terrain,
             ),
             dim=-1,
         )
@@ -97,7 +160,12 @@ class _TeacherExport(nn.Module):
         return actions
 
     def get_dummy_inputs(self):
-        return torch.zeros(1, self.history_dim), torch.zeros(1, 132)
+        scan = (
+            torch.zeros(1, 132)
+            if self.scan_history_length == 1
+            else torch.zeros(1, self.scan_history_length, 132)
+        )
+        return torch.zeros(1, self.history_dim), scan
 
 
 def expand_him_state(actor: XZ1TerrainTeacherActor, source: dict) -> dict:
@@ -116,9 +184,46 @@ def expand_him_state(actor: XZ1TerrainTeacherActor, source: dict) -> dict:
         if key == "mlp.0.weight":
             if value.shape != (target[key].shape[0], 66):
                 raise ValueError("Warm-start actor must have the XZ1 66-D HIM input")
-            value = torch.cat((value, value.new_zeros(value.shape[0], 32)), dim=1)
+            value = torch.cat(
+                (
+                    value,
+                    value.new_zeros(value.shape[0], 32 * actor.scan_history_length),
+                ),
+                dim=1,
+            )
         if value.shape != target[key].shape:
             raise ValueError(f"Warm-start shape mismatch for {key}: {value.shape}")
+        merged[key] = value
+    return merged
+
+
+def expand_teacher_state(actor: XZ1TerrainTeacherActor, source: dict) -> dict:
+    """Preserve current-frame actions when adding older scan features."""
+    target = actor.state_dict()
+    if set(source) != set(target):
+        raise ValueError("Warm-start teacher actor keys differ")
+    merged = {}
+    for key, value in source.items():
+        if not torch.isfinite(value).all():
+            raise ValueError(f"Invalid warm-start teacher tensor: {key}")
+        if key == "mlp.0.weight" and value.shape != target[key].shape:
+            if (
+                value.shape[0] != target[key].shape[0]
+                or value.shape[1] != 98
+                or actor.scan_history_length <= 1
+            ):
+                raise ValueError("Only single-frame teacher expansion is supported")
+            value = torch.cat(
+                (
+                    value,
+                    value.new_zeros(
+                        value.shape[0], target[key].shape[1] - value.shape[1]
+                    ),
+                ),
+                dim=1,
+            )
+        if value.shape != target[key].shape:
+            raise ValueError(f"Invalid warm-start teacher tensor: {key}")
         merged[key] = value
     return merged
 
@@ -128,24 +233,29 @@ class XZ1TerrainTeacherRunner(HIMOnPolicyRunner):
 
     def __init__(self, env, train_cfg, log_dir=None, device="cpu"):
         checkpoint = train_cfg.get("initial_checkpoint")
-        if checkpoint and train_cfg.get("resume"):
-            raise ValueError("Choose initial_checkpoint OR resume, not both")
+        if train_cfg.get("resume"):
+            checkpoint = None  # Explicit resume takes priority over task defaults.
         super().__init__(env, train_cfg, log_dir, device)
+        actor = cast(XZ1TerrainTeacherActor, self.alg.get_policy())
+        scan_cfg = self.env.unwrapped.cfg.observations[actor.scan_group]
+        params = scan_cfg.terms["height_scan"].params
+        env_length = params.get("history_length", scan_cfg.history_length or 1)
+        env_period = params.get("update_period", self.env.unwrapped.step_dt)
+        if env_length != actor.scan_history_length or not math.isclose(
+            env_period, actor.scan_update_period, abs_tol=1e-9
+        ):
+            raise ValueError("Teacher environment and actor scan timing/history differ")
         self.warm_start_source = None
         if checkpoint:
             self.warm_start(checkpoint)
 
     def _numerical_contract(self):
+        actor = cast(XZ1TerrainTeacherActor, self.alg.get_policy())
         return {
             **super()._numerical_contract(),
-            "teacher_scan": {
-                "points": 132,
-                "latent": 32,
-                "offset": 0.3,
-                "clip": [-1.0, 1.0],
-                "order": "x_major_y_minor",
-                "privileged_not_camera": True,
-            },
+            "teacher_scan": teacher_scan_contract(
+                actor.scan_history_length, actor.scan_update_period
+            ),
         }
 
     def warm_start(self, path: str):
@@ -159,20 +269,15 @@ class XZ1TerrainTeacherRunner(HIMOnPolicyRunner):
         source = torch.load(path, map_location=self.device, weights_only=False)
         contract = (source.get("infos") or {}).get("him_numerics")
         expected = HIMOnPolicyRunner._numerical_contract(self)
-        from_teacher = contract == self._numerical_contract()
+        legacy_teacher = {**expected, "teacher_scan": teacher_scan_contract()}
+        from_teacher = contract in (self._numerical_contract(), legacy_teacher)
         if contract != expected and not from_teacher:
             raise ValueError("Warm-start HIM numerical/history contract mismatch")
         actor = self.alg.get_policy()
         if not isinstance(actor, XZ1TerrainTeacherActor):
             raise TypeError("Teacher runner requires XZ1TerrainTeacherActor")
         if from_teacher:
-            actor_state = source["actor_state_dict"]
-            target = actor.state_dict()
-            if set(actor_state) != set(target):
-                raise ValueError("Warm-start teacher actor keys differ")
-            for key, value in actor_state.items():
-                if value.shape != target[key].shape or not torch.isfinite(value).all():
-                    raise ValueError(f"Invalid warm-start teacher tensor: {key}")
+            actor_state = expand_teacher_state(actor, source["actor_state_dict"])
         else:
             actor_state = expand_him_state(actor, source["actor_state_dict"])
         critic_state = source["critic_state_dict"]
@@ -279,8 +384,15 @@ class XZ1TerrainTeacherRunner(HIMOnPolicyRunner):
             )
 
     def load(self, path, load_cfg=None, strict=True, map_location=None):
+        source = torch.load(path, map_location="cpu", weights_only=False)
+        if (source.get("infos") or {}).get(
+            "him_numerics"
+        ) != self._numerical_contract():
+            raise ValueError(
+                "Teacher scan/history contract differs; use initial_checkpoint "
+                "for a single-frame teacher weight-only warm start"
+            )
         if load_cfg is None or load_cfg.get("iteration", True):
-            source = torch.load(path, map_location="cpu", weights_only=False)
             names = self._terrain_names()
             if (source.get("infos") or {}).get("xz1_terrain_names") != names:
                 raise ValueError(

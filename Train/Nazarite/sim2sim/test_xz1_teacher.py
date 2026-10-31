@@ -38,7 +38,7 @@ def test_height_scan_order_yaw_visibility_and_missing_surface():
 @pytest.fixture(scope="module")
 def policy():
     if not DEFAULT_POLICY.exists():
-        pytest.skip("Local stage2 teacher checkpoint unavailable")
+        pytest.skip("Local teacher checkpoint unavailable")
     torch.set_num_threads(2)
     return TeacherPolicy(DEFAULT_POLICY)
 
@@ -48,11 +48,43 @@ def test_teacher_matches_current_first_export_and_resets(policy):
     history = rng.normal(size=282).astype(np.float32)
     history.reshape(6, 47)[:, 35:] *= 20
     scan = rng.uniform(-1, 1, size=132).astype(np.float32)
+    policy.reset()
     actual = policy.step(history, scan)
     export = policy.actor.as_onnx()
     with torch.inference_mode():
-        expected = export(torch.from_numpy(history)[None], torch.from_numpy(scan)[None])
+        scan_input = scan if policy.scan_history_length == 1 else policy.scan_history
+        expected = export(
+            torch.from_numpy(history)[None], torch.from_numpy(scan_input.copy())[None]
+        )
     np.testing.assert_allclose(actual, expected.numpy()[0], atol=2e-6, rtol=2e-6)
+    if policy.scan_history_length > 1 or policy.scan_update_steps > 1:
+        initial_action = actual.copy()
+        expected_history = np.repeat(scan[None], policy.scan_history_length, axis=0)
+        count = policy.scan_update_steps * (policy.scan_history_length + 1)
+        for index in range(1, count + 1):
+            scan_next = scan * index / (count + 2)
+            actual = policy.step(history, scan_next)
+            if index % policy.scan_update_steps == 0:
+                expected_history[:-1] = expected_history[1:].copy()
+                expected_history[-1] = scan_next
+            np.testing.assert_array_equal(policy.scan_history, expected_history)
+            with torch.inference_mode():
+                expected = export(
+                    torch.from_numpy(history)[None],
+                    torch.from_numpy(
+                        (
+                            policy.scan_history[0]
+                            if policy.scan_history_length == 1
+                            else policy.scan_history
+                        ).copy()
+                    )[None],
+                )
+            np.testing.assert_allclose(
+                actual, expected.numpy()[0], atol=2e-6, rtol=2e-6
+            )
+        policy.reset()
+        assert policy.scan_history is None
+        np.testing.assert_allclose(policy.step(history, scan), initial_action)
     policy.reset()
     np.testing.assert_array_equal(policy.last_action, 0)
     with pytest.raises(ValueError, match="132"):
@@ -85,6 +117,8 @@ def test_teacher_gamepad_reset_restarts_history_and_scan(monkeypatch, policy):
             self.closed = True
 
     class RecordedPolicy:
+        scan_history_length = 1
+
         def __init__(self, *args):
             policy.reset()
 

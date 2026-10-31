@@ -7,6 +7,7 @@ import json
 import math
 from collections import Counter
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -159,9 +160,19 @@ def landing_mask(
 
 def evaluate_case(args, terrain: str, difficulty: float):
     cfg_factory = Nazarite_WMP_HIM_Eval_XZ1
+    scan_history_length = 1
+    scan_update_period = 0.02
+    if args.policy == "teacher":
+        saved = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        scan_contract = saved["infos"]["him_numerics"]["teacher_scan"]
+        scan_history_length = scan_contract.get("history_length", 1)
+        scan_update_period = scan_contract.get("update_period", 0.02)
+        cfg_factory = partial(
+            Nazarite_WMP_HIM_Eval_XZ1,
+            scan_history_length=scan_history_length,
+            scan_update_period=scan_update_period,
+        )
     if args.policy == "student":
-        from functools import partial
-
         cfg_factory = partial(student_eval_cfg, args.checkpoint)
     cfg = cfg_factory(
         terrain=terrain,
@@ -193,7 +204,10 @@ def evaluate_case(args, terrain: str, difficulty: float):
         else:
             if args.policy == "teacher":
                 runner_cfg, runner_type = (
-                    xz1_teacher_runner_cfg(),
+                    xz1_teacher_runner_cfg(
+                        scan_history_length=scan_history_length,
+                        scan_update_period=scan_update_period,
+                    ),
                     XZ1TerrainTeacherRunner,
                 )
             else:
