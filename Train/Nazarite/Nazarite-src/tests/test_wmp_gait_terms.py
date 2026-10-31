@@ -13,7 +13,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nazarite.mdp import wmp_rewards, wmp_terminations
+from nazarite.mdp.wmp import rewards as wmp_rewards
+from nazarite.mdp.wmp import terminations as wmp_terminations
 
 N_ENVS = 4
 TERRAIN_NAMES = (

@@ -1,11 +1,9 @@
-"""PPO runner configuration for the XZ1 WTW task."""
+"""Compatibility import; implementation lives in :mod:`nazarite.config.train_config.xz1.wtw_rl_cfg`."""
 
-from mjlab.rl import RslRlOnPolicyRunnerCfg
-from nazarite.config.train_config.rl_cfg import unitree_go2_normal_ppo_runner_cfg
+import importlib as _importlib
+import sys as _sys
 
-
-def xz1_wtw_runner_cfg(
-    experiment_name: str = "xz1_flat_wtw",
-) -> RslRlOnPolicyRunnerCfg:
-    """Return the standard WTW PPO setup with an XZ1 experiment name."""
-    return unitree_go2_normal_ppo_runner_cfg(experiment_name=experiment_name)
+if __name__ == "__main__":
+    _importlib.import_module("nazarite.config.train_config.xz1.wtw_rl_cfg").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("nazarite.config.train_config.xz1.wtw_rl_cfg")

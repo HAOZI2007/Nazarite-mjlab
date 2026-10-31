@@ -9,15 +9,10 @@ import onnx
 import onnxruntime as ort
 import pytest
 import torch
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
-  Nazarite_WMP_HIM_Eval_XZ1,
-  Nazarite_WMP_HIM_Teacher_XZ1,
-)
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
-  xz1_teacher_runner_cfg,
-)
-from nazarite.rl.xz1_teacher import XZ1TerrainTeacherRunner
-from nazarite.scripts.evaluate_xz1_wmp import evaluate_case
+from nazarite.config.train_config.xz1.teacher_env_cfg import Nazarite_WMP_HIM_Eval_XZ1, Nazarite_WMP_HIM_Teacher_XZ1
+from nazarite.config.train_config.xz1.teacher_rl_cfg import xz1_teacher_runner_cfg
+from nazarite.rl.xz1.teacher import XZ1TerrainTeacherRunner
+from nazarite.scripts.xz1.evaluate_xz1_wmp import evaluate_case
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper

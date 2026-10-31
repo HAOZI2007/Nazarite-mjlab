@@ -9,8 +9,8 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from nazarite.config.train_config.XZ1_env_cfgs.him_rl_cfg import xz1_him_runner_cfg
-from nazarite.rl.xz1_teacher import (
+from nazarite.config.train_config.xz1.him_rl_cfg import xz1_him_runner_cfg
+from nazarite.rl.xz1.teacher import (
     XZ1TerrainTeacherActor,
     XZ1TerrainTeacherRunner,
     expand_teacher_state,
@@ -68,16 +68,14 @@ def test_history_has_gradient_and_minibatch_evaluation_has_no_mutable_state():
 
 
 def test_standalone_teacher_preserves_environment_and_rl_defaults():
-    from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
+    from nazarite.config.train_config.xz1.him_env_cfg import (
         XZ1_WMP_COMPLEX_TERRAINS_CFG,
         _build_xz1_env,
     )
-    from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+    from nazarite.config.train_config.xz1.teacher_env_cfg import (
         Nazarite_WMP_HIM_Teacher_XZ1,
     )
-    from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
-        xz1_teacher_runner_cfg,
-    )
+    from nazarite.config.train_config.xz1.teacher_rl_cfg import xz1_teacher_runner_cfg
 
     legacy = _build_xz1_env(False, XZ1_WMP_COMPLEX_TERRAINS_CFG, obstacle_courses=True)
     teacher = Nazarite_WMP_HIM_Teacher_XZ1(scan_history_length=6)
@@ -108,12 +106,12 @@ def test_standalone_teacher_preserves_environment_and_rl_defaults():
 
 
 def test_teacher_configuration_does_not_read_him_task_settings(monkeypatch):
-    from nazarite.config.train_config.XZ1_env_cfgs import him_env_cfg, him_rl_cfg
-    from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+    from nazarite.config.train_config.xz1 import him_env_cfg, him_rl_cfg
+    from nazarite.config.train_config.xz1.teacher_env_cfg import (
         XZ1_TEACHER_NUM_ENVS,
         Nazarite_WMP_HIM_Teacher_XZ1,
     )
-    from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
+    from nazarite.config.train_config.xz1.teacher_rl_cfg import (
         xz1_height_history_training_cfg,
     )
 
@@ -143,7 +141,7 @@ def test_teacher_configuration_does_not_read_him_task_settings(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA training")
 def test_registered_task_warm_start_ppo_reset_resume_export_and_sim2sim(tmp_path):
     import onnxruntime as ort
-    from sim2sim.teacher import TeacherPolicy
+    from sim2sim.xz1.teacher.policy import TeacherPolicy
 
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import RslRlVecEnvWrapper
@@ -253,7 +251,7 @@ def test_registered_task_warm_start_ppo_reset_resume_export_and_sim2sim(tmp_path
 def test_scan_acquisition_holds_history_and_partial_reset_has_independent_clock(
     monkeypatch,
 ):
-    from nazarite.config.train_config.XZ1_env_cfgs import teacher_env_cfg as module
+    from nazarite.config.train_config.xz1 import teacher_env_cfg as module
 
     env = SimpleNamespace(num_envs=2, device="cpu", step_dt=0.02, common_step_counter=0)
     cfg = SimpleNamespace(params={"history_length": 3, "update_period": 0.1})
@@ -300,9 +298,9 @@ def test_scan_acquisition_holds_history_and_partial_reset_has_independent_clock(
 
 
 def test_sim2sim_acquires_three_distinct_scans_at_ten_hz_and_reset(monkeypatch):
-    from sim2sim import teacher as deploy_module
+    from sim2sim.xz1.teacher import policy as deploy_module
 
-    from nazarite.rl.xz1_teacher import teacher_scan_contract
+    from nazarite.rl.xz1.teacher import teacher_scan_contract
 
     _, _, actor = models()
     monkeypatch.setattr(deploy_module, "load_teacher", lambda *args: actor)

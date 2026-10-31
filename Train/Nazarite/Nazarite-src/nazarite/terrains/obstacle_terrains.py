@@ -258,11 +258,11 @@ class BoxSingleBridgeTerrainCfg(SubTerrainCfg):
 
 
 __all__ = [
+  "BoxGravelTerrainCfg",
   "BoxHeightLimitFrameTerrainCfg",
   "BoxHighWallTerrainCfg",
-  "BoxGravelTerrainCfg",
-  "BoxLGravelPitTerrainCfg",
   "BoxLBrickMulchPitTerrainCfg",
+  "BoxLGravelPitTerrainCfg",
   "BoxSingleBridgeTerrainCfg",
   "BoxTireArrayTerrainCfg",
 ]

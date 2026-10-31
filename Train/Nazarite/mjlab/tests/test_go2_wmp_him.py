@@ -3,18 +3,10 @@
 from types import SimpleNamespace
 
 import torch
-from nazarite.config.train_config.env_cfgs.wmp_him_go2_env_cfg import (
-  Nazarite_WMP_HIM_Complex_Terrain_Go2,
-)
-from nazarite.mdp.wmp_observations import empty_world_model_feature
-from nazarite.mdp.wmp_rewards import feet_edge, feet_edge_curriculum_scale
-from nazarite.mdp.wmp_terminations import (
-  base_contact,
-  fall,
-  forward_course_bounds,
-  reference_time_out,
-  velocity_violation,
-)
+from nazarite.config.train_config.go2.wmp_him_go2_env_cfg import Nazarite_WMP_HIM_Complex_Terrain_Go2
+from nazarite.mdp.wmp.observations import empty_world_model_feature
+from nazarite.mdp.wmp.rewards import feet_edge, feet_edge_curriculum_scale
+from nazarite.mdp.wmp.terminations import base_contact, fall, forward_course_bounds, reference_time_out, velocity_violation
 from nazarite.rl.wmp.actor import WMPHIMActorModel
 from nazarite.rl.wmp.replay import WorldModelReplay
 from nazarite.rl.wmp.runner import WMPHIMOnPolicyRunner
@@ -101,7 +93,7 @@ def test_wmp_task_has_camera_feature_group_and_expected_reward_weights():
 
 
 def test_wmp_actor_observation_has_no_gait_clock():
-  from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
+  from nazarite.config.train_config.go2.wmp_rl_cfg import go2_wmp_him_runner_cfg
 
   cfg = Nazarite_WMP_HIM_Complex_Terrain_Go2()
   assert "phase" not in cfg.observations["actor"].terms
@@ -265,9 +257,7 @@ def test_wmp_task_uses_reference_termination_and_domain_randomization_cfg():
 
 
 def test_wmp_reset_distribution_does_not_change_shared_him_config():
-  from nazarite.config.train_config.env_cfgs.him_complex_env_cfg import (
-    Nazarite_HIM_Complex_Terrain_Go2,
-  )
+  from nazarite.config.train_config.go2.him_complex_env_cfg import Nazarite_HIM_Complex_Terrain_Go2
 
   Nazarite_WMP_HIM_Complex_Terrain_Go2()
   him_pose_range = (

@@ -11,16 +11,16 @@ import torch
 import warp as wp
 
 from nazarite.config.robot_config.xz1_cfg import XZ1_FOOT_GEOMS
-from nazarite.config.train_config.XZ1_env_cfgs import him_course as course
-from nazarite.config.train_config.XZ1_env_cfgs.him_obstacles import (
+from nazarite.config.train_config.xz1 import him_course as course
+from nazarite.config.train_config.xz1.him_obstacles import (
     GAP_BOTTOM_PREFIX,
     OBSTACLE_TERRAIN_NAMES,
     XZ1_TERRAIN_NAMES,
 )
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+from nazarite.config.train_config.xz1.teacher_env_cfg import (
     Nazarite_WMP_HIM_Teacher_XZ1,
 )
-from nazarite.scripts.evaluate_xz1_wmp import TERRAINS, course_goal, landing_mask
+from nazarite.scripts.xz1.evaluate_xz1_wmp import TERRAINS, course_goal, landing_mask
 
 
 def patch(name, difficulty):
@@ -219,7 +219,7 @@ def test_task_and_evaluator_share_exactly_nine_terrain_types():
 
 
 def test_student_rejects_seven_type_curriculum_before_restoring():
-    from nazarite.scripts.distill_xz1_wmp import restore_curriculum
+    from nazarite.scripts.xz1.distill_xz1_wmp import restore_curriculum
 
     _, env = runtime("plum_blossom", 0.0)
     for state in (
@@ -245,17 +245,13 @@ def test_nine_courses_teacher_ppo_and_real_depth_student_on_gpu():
 
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import RslRlVecEnvWrapper
-    from nazarite.config.train_config.XZ1_env_cfgs.collect_env_cfg import (
-        attach_xz1_depth,
-    )
-    from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+    from nazarite.config.train_config.xz1.collect_env_cfg import attach_xz1_depth
+    from nazarite.config.train_config.xz1.teacher_env_cfg import (
         Nazarite_WMP_HIM_Teacher_XZ1,
     )
-    from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
-        xz1_teacher_runner_cfg,
-    )
-    from nazarite.rl.xz1_student import load_student_policy
-    from nazarite.rl.xz1_teacher import XZ1TerrainTeacherRunner
+    from nazarite.config.train_config.xz1.teacher_rl_cfg import xz1_teacher_runner_cfg
+    from nazarite.rl.xz1.student import load_student_policy
+    from nazarite.rl.xz1.teacher import XZ1TerrainTeacherRunner
 
     cfg = attach_xz1_depth(Nazarite_WMP_HIM_Teacher_XZ1())
     cfg.scene.num_envs = 18

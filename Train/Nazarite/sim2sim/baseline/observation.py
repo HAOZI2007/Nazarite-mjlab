@@ -1,26 +1,11 @@
-"""Observation construction for the 45D baseline policy."""
+"""Compatibility import; implementation lives in :mod:`sim2sim.go2.baseline.observation`."""
 
-from __future__ import annotations
+import importlib as _importlib
+import sys as _sys
 
-import numpy as np
-
-from ..mujoco_io import MuJoCoIO
-from ..observation import build_actor_terms
-from .config import OBS_DIM, OBSERVATION_NAMES
-
-
-def build_observation(
-    io: MuJoCoIO,
-    command: np.ndarray,
-    last_action: np.ndarray,
-) -> np.ndarray:
-    """Build the term-major 45D actor input used during baseline training."""
-    terms = build_actor_terms(io, command, last_action)
-    obs = np.concatenate([terms[name] for name in OBSERVATION_NAMES]).astype(
-        np.float32
+if __name__ == "__main__":
+    _importlib.import_module("sim2sim.go2.baseline.observation").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module(
+        "sim2sim.go2.baseline.observation"
     )
-    if obs.shape != (OBS_DIM,):
-        raise RuntimeError(f"Baseline observation must be {OBS_DIM}D, got {obs.shape}")
-    if not np.all(np.isfinite(obs)):
-        raise FloatingPointError("Baseline observation contains NaN or Inf")
-    return obs

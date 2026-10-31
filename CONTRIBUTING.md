@@ -22,11 +22,10 @@
 - 完整外部数据集以及 `Train/Nazarite/tools/smp_dataset/` 下的所有原始数据、
   派生数据、统计文件、manifest、说明文件和扩散 prior。
 
-## SMP 数据约定
+## 历史实验资产
 
-SMP 数据和扩散模型统一放在本地
-`Train/Nazarite/tools/smp_dataset/`，该目录整体禁止提交。数据生成过程仍输出到
-同样不可提交的 `output/`，验收后再显式复制所需子集到本地数据集目录。
+DELTA/SMP 实现已移除。本地历史数据、checkpoint、日志和
+`Train/Nazarite/tools/smp_dataset/` 继续按忽略规则保留，不属于当前任务源码。
 
 ## 提交前检查
 

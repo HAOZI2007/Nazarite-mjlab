@@ -15,11 +15,8 @@ Nazarite东莞理工学院行者实验室 轮腿机器人 MuJoCo 强化学习与
 - `Nazarite-FRNet-Recovery-Go2`：平地摔倒恢复。
 - `Nazarite-FRNet-Recovery-Terrain-Go2`：复杂地形摔倒恢复。
 
-SMP（Score-Matching Motion Prior）相关代码和数据处理工具目前保留，但已
-**停止更新**。它们只用于保留已有实验、复现实验结果和查阅实现，不再作为
-后续功能开发、奖励调参或任务扩展的主线。除非为了复现旧实验，不建议继续
-运行 `Nazarite-SMP-Teacher-Go2`、`Nazarite-SMP-Forward-Go2` 或
-`smp-pretrain`。
+DELTA 和 SMP 专用任务、算法及部署实现已移除。XZ1/Go2 的其余 12 个任务继续保留，
+任务 ID 不变；代码分类和迁移说明见 [框架目录管理说明](docs/框架目录管理说明.md)。
 
 独立跳跃任务已经从当前项目中移除，历史跳跃日志和 checkpoint 仍保留在本地，
 但不再属于当前可注册、可训练任务。
@@ -33,7 +30,7 @@ SMP（Score-Matching Motion Prior）相关代码和数据处理工具目前保�
 │       ├── mjlab/                 # 通用 MuJoCo 强化学习基础库
 │       ├── .venv/                 # 当前已安装的 Python 环境
 │       ├── Nazarite-src/nazarite/ # 自定义训练包
-│       ├── tools/                 # SMP 等离线工具（SMP 已冻结）
+│       ├── tools/                 # 离线工具命名空间
 │       ├── sim2sim/               # 仿真到仿真的部署和检查脚本
 │       ├── logs/                  # 本地训练日志和 checkpoint
 │       ├── output/                # 本地数据处理产物
@@ -81,7 +78,7 @@ uv run pyright -p pyproject.toml Nazarite-src/nazarite
 
 ## 当前可用任务
 
-任务由 `Nazarite-src/nazarite/__init__.py` 注册，并可通过 `list-envs` 查看。
+任务由 `Nazarite-src/nazarite/tasks/go2/` 和 `tasks/xz1/` 分类注册，并可通过 `list-envs` 查看。
 
 | 任务 ID | 状态 | 用途 |
 |---|---|---|
@@ -89,8 +86,14 @@ uv run pyright -p pyproject.toml Nazarite-src/nazarite
 | `Nazarite-Velocity-Flat-Go2-WTW` | 主线 | Grid Adaptive + WTW Trot、phase 观测和独立行为奖励。 |
 | `Nazarite-FRNet-Recovery-Go2` | 主线 | 平地随机摔倒状态恢复，使用 FR-Net 辅助监督。 |
 | `Nazarite-FRNet-Recovery-Terrain-Go2` | 主线 | 复杂地形随机摔倒状态恢复。 |
-| `Nazarite-SMP-Teacher-Go2` | 冻结 | SMP 参考动作物理闭环教师，仅用于旧实验复现。 |
-| `Nazarite-SMP-Forward-Go2` | 冻结 | 冻结 SMP prior + 前向速度任务，仅用于旧实验复现。 |
+| `Nazarite-HIM-Complex-Terrain-Go2` | 保留 | HIM 复杂地形速度控制。 |
+| `Nazarite-WMP-HIM-Flat-Go2` | 保留 | WMP + HIM 平地。 |
+| `Nazarite-WMP-HIM-Complex-Terrain-Go2` | 保留 | WMP + HIM 复杂地形。 |
+| `Nazarite-Velocity-Flat-XZ1-WTW` | 保留 | XZ1 WTW 平地。 |
+| `Nazarite-HIM-Complex-Terrain-XZ1` | 保留 | XZ1 HIM 障碍地形。 |
+| `Nazarite-WMP-HIM-Collect-XZ1` | 保留 | XZ1 教师数据采集。 |
+| `Nazarite-WMP-HIM-Teacher-XZ1` | 保留 | XZ1 特权地形教师。 |
+| `Nazarite-WMP-HIM-Eval-XZ1` | 保留 | XZ1 地形评估。 |
 
 当前没有独立的跳跃任务。
 
@@ -124,17 +127,6 @@ uv run frnet-evaluate
 FR-Net 复杂地形任务包含平地、台阶、低矮随机网格和散布箱体等地形。具体奖励、
 辅助监督和地形课程见 [FR-Net 在 Nazarite 中的复现实施文档](docs/FR-Net在Nazarite中的复现实施文档.md)。
 
-## SMP 冻结说明
-
-SMP 目录不会删除，原因是它包含已有的数据处理、Go2 重定向、motion prior、
-GSI 和参考教师实现，仍有复现实验价值。但从现在开始：
-
-- 不再增加新的 SMP 数据集、网络结构、奖励项或训练任务；
-- 不再继续修复 SMP 训练效果或围绕 SMP 做新的调参迭代；
-- 不把 SMP 任务作为 WTW、FR-Net 或后续主线任务的依赖；
-- SMP 模型、数据集和 `output/` 产物默认只视为本地实验资产，不提交到 Git。
-
-SMP 历史流程见 [Nazarite-SMP 全链路数据处理与训练指南](docs/Nazarite-SMP全链路数据处理与训练指南.md)。
 
 ## 引用区(本项目所参考使用的仓库)
 1. mjlab

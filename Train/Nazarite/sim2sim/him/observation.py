@@ -1,45 +1,9 @@
-"""Build current-first frame histories for a HIM ONNX policy."""
+"""Compatibility import; implementation lives in :mod:`sim2sim.shared.him.observation`."""
 
-from __future__ import annotations
+import importlib as _importlib
+import sys as _sys
 
-import numpy as np
-
-from ..mujoco_io import MuJoCoIO
-from ..observation import build_actor_terms
-from .config import FRAME_DIM, HISTORY_SIZE, OBS_DIM, OBSERVATION_NAMES, PHASE_PERIOD
-
-
-class HIMObservationBuilder:
-    """Maintain six complete frames in current-first export order."""
-
-    def __init__(self) -> None:
-        self.history = np.zeros((HISTORY_SIZE, FRAME_DIM), dtype=np.float32)
-        self.phase = 0.0
-
-    def reset(self) -> None:
-        self.history.fill(0.0)
-        self.phase = 0.0
-
-    def build(
-        self,
-        io: MuJoCoIO,
-        command: np.ndarray,
-        last_action: np.ndarray,
-    ) -> np.ndarray:
-        terms = build_actor_terms(io, command, last_action)
-        phase = np.zeros(2, dtype=np.float32)
-        if np.linalg.norm(command) >= 0.1:
-            phase[:] = [np.sin(2.0 * np.pi * self.phase), np.cos(2.0 * np.pi * self.phase)]
-        terms["phase"] = phase
-        frame = np.concatenate([terms[name] for name in OBSERVATION_NAMES]).astype(np.float32)
-        if frame.shape != (FRAME_DIM,) or not np.all(np.isfinite(frame)):
-            raise FloatingPointError("HIM frame is invalid")
-        if not np.any(self.history):
-            self.history[:] = frame
-        else:
-            self.history[1:] = self.history[:-1].copy()
-            self.history[0] = frame
-        return self.history.reshape(OBS_DIM).copy()
-
-    def advance(self, dt: float) -> None:
-        self.phase = (self.phase + float(dt) / PHASE_PERIOD) % 1.0
+if __name__ == "__main__":
+    _importlib.import_module("sim2sim.shared.him.observation").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("sim2sim.shared.him.observation")

@@ -4,14 +4,9 @@ import mujoco
 import numpy as np
 import pytest
 import torch
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
-  Nazarite_HIM_Complex_Terrain_XZ1,
-)
-from nazarite.config.train_config.XZ1_env_cfgs.him_terrain import (
-  BoxTireArrayTerrainCfg,
-  BoxTrapezoidRampTerrainCfg,
-)
-from nazarite.mdp import events as custom_events
+from nazarite.config.train_config.xz1.him_env_cfg import Nazarite_HIM_Complex_Terrain_XZ1
+from nazarite.config.train_config.xz1.him_terrain import BoxTireArrayTerrainCfg, BoxTrapezoidRampTerrainCfg
+from nazarite.mdp.shared import events as custom_events
 
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 

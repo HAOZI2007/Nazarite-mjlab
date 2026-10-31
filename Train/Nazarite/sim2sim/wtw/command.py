@@ -1,15 +1,9 @@
-"""Command limits matching the selected WTW training distribution."""
+"""Compatibility import; implementation lives in :mod:`sim2sim.go2.wtw.command`."""
 
-from __future__ import annotations
+import importlib as _importlib
+import sys as _sys
 
-import numpy as np
-
-from .config import COMMAND_MAX, COMMAND_MIN
-
-
-def restrict_command(command: np.ndarray) -> np.ndarray:
-    """Clip [vx, vy, yaw] to the selected WTW training distribution."""
-    command = np.asarray(command, dtype=np.float32)
-    if command.shape != (3,):
-        raise ValueError(f"command must have shape (3,), got {command.shape}")
-    return np.clip(command, COMMAND_MIN, COMMAND_MAX).astype(np.float32)
+if __name__ == "__main__":
+    _importlib.import_module("sim2sim.go2.wtw.command").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("sim2sim.go2.wtw.command")

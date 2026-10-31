@@ -6,13 +6,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nazarite.config.train_config.XZ1_env_cfgs.collect_env_cfg import XZ1DepthCfg
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+from nazarite.config.train_config.xz1.collect_env_cfg import XZ1DepthCfg
+from nazarite.config.train_config.xz1.teacher_env_cfg import (
     Nazarite_WMP_HIM_Teacher_XZ1,
 )
 from nazarite.rl.wmp.xz1_dataset import EpisodeWriter, validate_episode
-from nazarite.scripts import collect_xz1_wmp as collect
-from nazarite.scripts.evaluate_xz1_wmp import (
+from nazarite.scripts.xz1 import collect_xz1_wmp as collect
+from nazarite.scripts.xz1.evaluate_xz1_wmp import (
     course_goal,
     crossing_route_limit,
     landing_half_width,

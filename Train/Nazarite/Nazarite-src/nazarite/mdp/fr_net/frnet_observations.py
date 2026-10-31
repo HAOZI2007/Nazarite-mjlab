@@ -11,7 +11,7 @@ from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.sensor import ContactSensor, TerrainHeightSensor
 from mjlab.tasks.velocity import mdp
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
-from nazarite.mdp import rewards as custom_rewards
+from nazarite.mdp.shared import rewards as custom_rewards
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv

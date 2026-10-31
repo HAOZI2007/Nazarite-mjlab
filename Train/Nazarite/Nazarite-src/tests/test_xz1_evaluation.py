@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nazarite.scripts.evaluate_xz1_wmp import (
+from nazarite.scripts.xz1.evaluate_xz1_wmp import (
     EpisodeAllocation,
     evaluation_difficulties,
 )

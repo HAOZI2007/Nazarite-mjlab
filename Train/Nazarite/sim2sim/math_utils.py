@@ -1,13 +1,9 @@
-from __future__ import annotations
+"""Compatibility import; implementation lives in :mod:`sim2sim.shared.math_utils`."""
 
-import numpy as np
+import importlib as _importlib
+import sys as _sys
 
-
-def action_to_target(
-    raw_action: np.ndarray,
-    default_q: np.ndarray,
-    action_scale: np.ndarray,
-) -> np.ndarray:
-    """Convert normalized actor output to Go2 joint position targets."""
-    raw_action = np.asarray(raw_action, dtype=np.float32)
-    return np.asarray(default_q, dtype=np.float32) + raw_action * action_scale
+if __name__ == "__main__":
+    _importlib.import_module("sim2sim.shared.math_utils").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("sim2sim.shared.math_utils")

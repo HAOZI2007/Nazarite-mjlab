@@ -54,9 +54,6 @@ class PlayConfig:
   onnx_filename: str = "policy.onnx"
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
-  delta_map_ablation: Literal["none", "zero", "shuffle"] = "none"
-  """DELTA-only causal test: remove or mismatch camera terrain channels."""
-
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
 
@@ -68,16 +65,6 @@ def run_play(task_id: str, cfg: PlayConfig):
 
   env_cfg = load_env_cfg(task_id, play=True)
   agent_cfg = load_rl_cfg(task_id)
-
-  if cfg.delta_map_ablation != "none":
-    delta_group = env_cfg.observations.get("delta_map")
-    if delta_group is None or "delta_map" not in delta_group.terms:
-      raise ValueError("Selected task has no DELTA map observation to ablate")
-    delta_term = delta_group.terms["delta_map"]
-    if delta_term.func.__name__ != "delta_depth_image":
-      raise ValueError("Map ablation is supported only for the D435 DELTA task")
-    delta_term.params["ablation_mode"] = cfg.delta_map_ablation
-    print(f"[INFO]: DELTA map ablation: {cfg.delta_map_ablation}")
 
   DUMMY_MODE = cfg.agent in {"zero", "random"}
   TRAINED_MODE = not DUMMY_MODE
@@ -237,29 +224,6 @@ def run_play(task_id: str, cfg: PlayConfig):
       return
     policy = runner.get_inference_policy(device=device)
 
-  # DELTA exposes its attention overlay through the policy model.  Keep the
-  # reference on the unwrapped environment so both Viser and native debug
-  # visualizers can draw the latest sampling points without changing the
-  # observation/action API.  Other policies simply pass through unchanged.
-  def _attach_delta_debug(policy_obj):
-    model = policy_obj
-    for attr in ("actor", "model"):
-      candidate = getattr(model, attr, None)
-      if candidate is not None and hasattr(candidate, "enable_attention_cache"):
-        model = candidate
-        break
-    if hasattr(model, "enable_attention_cache"):
-      model.enable_attention_cache(True)
-      env.unwrapped.debug_policy = model  # pyright: ignore[reportAttributeAccessIssue]
-      env.unwrapped.delta_attention_enabled = (  # pyright: ignore[reportAttributeAccessIssue]
-        True
-      )
-      env.unwrapped.delta_visual_debug_enabled = (  # pyright: ignore[reportAttributeAccessIssue]
-        True
-      )
-
-  _attach_delta_debug(policy)
-
   # Build checkpoint manager for hot-swapping checkpoints in the viewer.
   ckpt_manager: CheckpointManager | None = None
   if TRAINED_MODE and resume_path is not None:
@@ -273,7 +237,6 @@ def run_play(task_id: str, cfg: PlayConfig):
         map_location=device,
       )
       reloaded = _ckpt_runner.get_inference_policy(device=device)
-      _attach_delta_debug(reloaded)
       return reloaded
 
     if cfg.wandb_run_path is None:

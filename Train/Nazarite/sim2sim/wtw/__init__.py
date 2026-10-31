@@ -1,1 +1,9 @@
-"""Sim2sim support for Walk-These-Ways locomotion policies."""
+"""Compatibility package; implementations live in :mod:`sim2sim.go2.wtw`."""
+
+from importlib import import_module as _import_module
+
+_target = _import_module("sim2sim.go2.wtw")
+
+
+def __getattr__(name):
+    return getattr(_target, name)

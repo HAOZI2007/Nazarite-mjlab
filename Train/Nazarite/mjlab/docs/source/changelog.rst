@@ -5,6 +5,14 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Changed
+^^^^^^^
+
+- Remove retired Nazarite DELTA and SMP tasks and their play/viewer hooks.
+  Preserve shared HIM terrain curricula and XZ1/Go2 task behavior.
+  Group Nazarite training/deployment implementations by robot and purpose,
+  retaining legacy import and command entry points.
+
 Fixed
 ^^^^^
 

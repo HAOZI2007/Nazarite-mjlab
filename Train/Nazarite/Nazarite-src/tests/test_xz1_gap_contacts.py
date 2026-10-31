@@ -10,11 +10,9 @@ import warp as wp
 
 from mjlab.terrains.terrain_generator import TerrainGenerator
 from nazarite.config.robot_config.xz1_cfg import XZ1_FOOT_GEOMS
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
-    XZ1_WMP_COMPLEX_TERRAINS_CFG,
-)
-from nazarite.config.train_config.XZ1_env_cfgs.him_obstacles import GAP_BOTTOM_PREFIX
-from nazarite.mdp.xz1_contacts import GapBottomContact
+from nazarite.config.train_config.xz1.him_env_cfg import XZ1_WMP_COMPLEX_TERRAINS_CFG
+from nazarite.config.train_config.xz1.him_obstacles import GAP_BOTTOM_PREFIX
+from nazarite.mdp.xz1.contacts import GapBottomContact
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda:0"])

@@ -7,28 +7,11 @@ import mujoco
 import numpy as np
 import pytest
 import torch
-from nazarite.config.train_config.env_cfgs.him_complex_env_cfg import (
-  HIM_COMPLEX_TERRAINS_CFG,
-)
-from nazarite.config.train_config.env_cfgs.wmp_him_go2_env_cfg import (
-  WMP_FEET_EDGE_TERRAINS,
-  Nazarite_WMP_HIM_Complex_Terrain_Go2,
-)
-from nazarite.config.train_config.env_cfgs.wmp_terrain import (
-  WMP_FLAT_TERRAINS_CFG,
-  WMP_FORWARD_TERRAIN_NAMES,
-  WMP_NUM_ROWS,
-  WMP_OMNI_TERRAIN_NAMES,
-  WMP_TERRAIN_NAMES,
-  WMP_TERRAINS_CFG,
-  WMP_TRACK_VOID,
-  _difficulty,
-)
-from nazarite.mdp.commands import TerrainConditionedVelocityCommand
-from nazarite.mdp.wmp_curriculums import (
-  forward_velocity_wmp_reference,
-  terrain_levels_wmp_reference,
-)
+from nazarite.config.train_config.go2.him_complex_env_cfg import HIM_COMPLEX_TERRAINS_CFG
+from nazarite.config.train_config.go2.wmp_him_go2_env_cfg import WMP_FEET_EDGE_TERRAINS, Nazarite_WMP_HIM_Complex_Terrain_Go2
+from nazarite.config.train_config.go2.wmp_terrain import WMP_FLAT_TERRAINS_CFG, WMP_FORWARD_TERRAIN_NAMES, WMP_NUM_ROWS, WMP_OMNI_TERRAIN_NAMES, WMP_TERRAIN_NAMES, WMP_TERRAINS_CFG, WMP_TRACK_VOID, _difficulty
+from nazarite.mdp.shared.commands import TerrainConditionedVelocityCommand
+from nazarite.mdp.wmp.curriculums import forward_velocity_wmp_reference, terrain_levels_wmp_reference
 
 from mjlab.terrains.terrain_generator import TerrainGenerator
 

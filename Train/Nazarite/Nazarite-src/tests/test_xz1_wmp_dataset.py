@@ -7,10 +7,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nazarite.config.train_config.XZ1_env_cfgs.collect_env_cfg import XZ1DepthCfg
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
-    Nazarite_WMP_HIM_Eval_XZ1,
-)
+from nazarite.config.train_config.xz1.collect_env_cfg import XZ1DepthCfg
+from nazarite.config.train_config.xz1.teacher_env_cfg import Nazarite_WMP_HIM_Eval_XZ1
 from nazarite.rl.wmp.world_model import WMPWorldModel, WMPWorldModelCfg
 from nazarite.rl.wmp.xz1_dataset import (
     EpisodeWriter,
@@ -19,8 +17,8 @@ from nazarite.rl.wmp.xz1_dataset import (
     validate_episode,
     xz1_wm_prop,
 )
-from nazarite.scripts.collect_xz1_wmp import collection_cfg
-from nazarite.scripts.pretrain_xz1_wmp import run_pretraining, validate_world_model
+from nazarite.scripts.xz1.collect_xz1_wmp import collection_cfg
+from nazarite.scripts.xz1.pretrain_xz1_wmp import run_pretraining, validate_world_model
 
 
 def frames(seed, count=8):

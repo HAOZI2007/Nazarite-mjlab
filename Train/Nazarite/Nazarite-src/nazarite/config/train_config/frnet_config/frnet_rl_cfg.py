@@ -1,82 +1,9 @@
-"""RSL-RL configuration for the Nazarite FR-Net recovery task."""
+"""Compatibility import; implementation lives in :mod:`nazarite.config.train_config.go2.frnet.frnet_rl_cfg`."""
 
-from __future__ import annotations
+import importlib as _importlib
+import sys as _sys
 
-from dataclasses import dataclass
-
-from mjlab.rl import (
-  RslRlModelCfg,
-  RslRlOnPolicyRunnerCfg,
-  RslRlPpoAlgorithmCfg,
-)
-
-
-@dataclass
-class FRNetActorCfg(RslRlModelCfg):
-  """Additional constructor arguments consumed by :class:`FRNetActor`."""
-
-  history_length: int = 5
-  proprio_dim: int = 42
-  mass_dim: int = 4
-  contact_dim: int = 13
-  latent_dim: int = 16
-  mcp_hidden_dims: tuple[int, ...] = (256, 128)
-  class_name: str = "nazarite.rl.fr_net.frnet_actor:FRNetActor"
-
-
-@dataclass
-class FRNetPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
-  """Additional auxiliary-loss weights consumed by :class:`FRNetPPO`."""
-
-  mcp_loss_coef: float = 0.25
-  mass_loss_coef: float = 1.0
-  contact_loss_coef: float = 1.0
-  class_name: str = "nazarite.rl.fr_net.frnet_ppo:FRNetPPO"
-
-
-def frnet_go2_recovery_runner_cfg(
-  experiment_name: str = "go2_frnet_recovery",
-) -> RslRlOnPolicyRunnerCfg:
-  """Create the actor-critic and PPO settings for FR-Net recovery."""
-  return RslRlOnPolicyRunnerCfg(
-    actor=FRNetActorCfg(
-      hidden_dims=(512, 256, 128),
-      activation="elu",
-      obs_normalization=False,
-      distribution_cfg={
-        "class_name": "GaussianDistribution",
-        "init_std": 1.0,
-        "std_type": "log",
-      },
-    ),
-    critic=RslRlModelCfg(
-      class_name="MLPModel",
-      hidden_dims=(512, 256, 128),
-      activation="elu",
-      obs_normalization=False,
-    ),
-    algorithm=FRNetPpoAlgorithmCfg(
-      value_loss_coef=1.0,
-      use_clipped_value_loss=True,
-      clip_param=0.2,
-      # Recovery benefits from decisive low-variance actions after the
-      # exploration phase; a smaller entropy bonus reduces post-stand hopping.
-      entropy_coef=0.005,
-      num_learning_epochs=5,
-      num_mini_batches=4,
-      learning_rate=1.0e-4,
-      schedule="adaptive",
-      gamma=0.99,
-      lam=0.95,
-      desired_kl=0.01,
-      max_grad_norm=1.0,
-      mcp_loss_coef=0.25,
-      mass_loss_coef=1.0,
-      contact_loss_coef=1.0,
-    ),
-    obs_groups={"actor": ("actor",), "critic": ("critic",)},
-    experiment_name=experiment_name,
-    save_interval=50,
-    num_steps_per_env=24,
-    max_iterations=15_000,
-  )
+if __name__ == "__main__":
+    _importlib.import_module("nazarite.config.train_config.go2.frnet.frnet_rl_cfg").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("nazarite.config.train_config.go2.frnet.frnet_rl_cfg")

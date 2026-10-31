@@ -18,19 +18,10 @@ from nazarite.config.robot_config.xz1_cfg import (
   XZ1_XML,
   get_xz1_cfg,
 )
-from nazarite.config.train_config.XZ1_env_cfgs import him_course
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
-  XZ1_HIM_BASE_CONTACT_HISTORY,
-  XZ1_HIM_BASE_CONTACT_LOAD_STEPS,
-  XZ1_HIM_GAIT_OFFSETS,
-  XZ1_HIM_GAIT_PERIOD,
-  XZ1_HIM_JOINT_NAMES,
-  XZ1_HIM_STANCE_PRECOMPENSATION,
-  XZ1_HIM_STANCE_TARGET,
-  Nazarite_HIM_Complex_Terrain_XZ1,
-)
-from nazarite.config.train_config.XZ1_env_cfgs.him_rl_cfg import xz1_him_runner_cfg
-from nazarite.mdp import rewards, terminations
+from nazarite.config.train_config.xz1 import him_course
+from nazarite.config.train_config.xz1.him_env_cfg import XZ1_HIM_BASE_CONTACT_HISTORY, XZ1_HIM_BASE_CONTACT_LOAD_STEPS, XZ1_HIM_GAIT_OFFSETS, XZ1_HIM_GAIT_PERIOD, XZ1_HIM_JOINT_NAMES, XZ1_HIM_STANCE_PRECOMPENSATION, XZ1_HIM_STANCE_TARGET, Nazarite_HIM_Complex_Terrain_XZ1
+from nazarite.config.train_config.xz1.him_rl_cfg import xz1_him_runner_cfg
+from nazarite.mdp.shared import rewards as rewards, terminations as terminations
 
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg

@@ -11,7 +11,7 @@ from typing import Any, cast
 import torch
 from tensordict import TensorDict
 
-from nazarite.rl.him_runner import HIMOnPolicyRunner
+from nazarite.rl.him.runner import HIMOnPolicyRunner
 from nazarite.rl.wmp.amp import AdversarialMotionPrior
 from nazarite.rl.wmp.replay import WorldModelReplay
 from nazarite.rl.wmp.world_model import WMPWorldModel, WMPWorldModelCfg

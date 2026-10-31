@@ -6,11 +6,9 @@ import mujoco
 import numpy as np
 import pytest
 import torch
-from nazarite.config.train_config.XZ1_env_cfgs import him_course as course
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
-  Nazarite_HIM_Complex_Terrain_XZ1,
-)
-from nazarite.mdp import curriculums, rewards
+from nazarite.config.train_config.xz1 import him_course as course
+from nazarite.config.train_config.xz1.him_env_cfg import Nazarite_HIM_Complex_Terrain_XZ1
+from nazarite.mdp.shared import curriculums as curriculums, rewards as rewards
 
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 

@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import pytest
 import torch
-from nazarite.config.train_config.env_cfgs.wmp_him_go2_env_cfg import (
-  Nazarite_WMP_HIM_Complex_Terrain_Go2,
-)
-from nazarite.config.train_config.wmp_him_go2_cfg import go2_wmp_him_runner_cfg
+from nazarite.config.train_config.go2.wmp_him_go2_env_cfg import Nazarite_WMP_HIM_Complex_Terrain_Go2
+from nazarite.config.train_config.go2.wmp_rl_cfg import go2_wmp_him_runner_cfg
 from nazarite.rl.wmp.runner import WMPHIMOnPolicyRunner
 
 from mjlab.envs import ManagerBasedRlEnv

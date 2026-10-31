@@ -1,1 +1,9 @@
-"""XZ1 depth camera and stateful visual student inference."""
+"""Compatibility package; implementations live in :mod:`sim2sim.xz1.wmp`."""
+
+from importlib import import_module as _import_module
+
+_target = _import_module("sim2sim.xz1.wmp")
+
+
+def __getattr__(name):
+    return getattr(_target, name)

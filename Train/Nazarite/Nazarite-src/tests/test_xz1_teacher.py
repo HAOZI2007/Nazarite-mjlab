@@ -8,22 +8,20 @@ import torch
 from rsl_rl.models.him_actor_model import HIMActorModel
 from tensordict import TensorDict
 
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
+from nazarite.config.train_config.xz1.him_env_cfg import (
     Nazarite_HIM_Complex_Terrain_XZ1,
 )
-from nazarite.config.train_config.XZ1_env_cfgs.him_rl_cfg import xz1_him_runner_cfg
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+from nazarite.config.train_config.xz1.him_rl_cfg import xz1_him_runner_cfg
+from nazarite.config.train_config.xz1.teacher_env_cfg import (
     SCAN_X,
     SCAN_Y,
     Nazarite_WMP_HIM_Eval_XZ1,
     Nazarite_WMP_HIM_Teacher_XZ1,
     ParkourScanPatternCfg,
 )
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
-    xz1_teacher_runner_cfg,
-)
-from nazarite.rl.xz1_teacher import XZ1TerrainTeacherActor, expand_him_state
-from nazarite.scripts.evaluate_xz1_wmp import course_goal, landing_mask
+from nazarite.config.train_config.xz1.teacher_rl_cfg import xz1_teacher_runner_cfg
+from nazarite.rl.xz1.teacher import XZ1TerrainTeacherActor, expand_him_state
+from nazarite.scripts.xz1.evaluate_xz1_wmp import course_goal, landing_mask
 
 
 def _models():
@@ -115,12 +113,10 @@ def test_teacher_and_eval_configs_do_not_mutate_base_xz1():
 
 @pytest.mark.parametrize("play", [False, True])
 def test_him_terrain_rollback_keeps_visual_course_configuration_isolated(play):
-    from nazarite.config.train_config.XZ1_env_cfgs.collect_env_cfg import (
+    from nazarite.config.train_config.xz1.collect_env_cfg import (
         Nazarite_WMP_HIM_Collect_XZ1,
     )
-    from nazarite.config.train_config.XZ1_env_cfgs.him_obstacles import (
-        XZ1_TERRAIN_NAMES,
-    )
+    from nazarite.config.train_config.xz1.him_obstacles import XZ1_TERRAIN_NAMES
 
     base = Nazarite_HIM_Complex_Terrain_XZ1(play=play)
     teacher = Nazarite_WMP_HIM_Teacher_XZ1(play=play)

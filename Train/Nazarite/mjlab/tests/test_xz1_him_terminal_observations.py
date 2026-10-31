@@ -10,13 +10,9 @@ import numpy as np
 import pytest
 import torch
 from nazarite.config.robot_config.xz1_cfg import XZ1_XML, get_spec, get_xz1_cfg
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
-  Nazarite_HIM_Complex_Terrain_XZ1,
-)
-from nazarite.config.train_config.XZ1_env_cfgs.him_rl_cfg import xz1_him_runner_cfg
-from nazarite.config.train_config.XZ1_env_cfgs.terminal_observations import (
-  TerminalEstimatorRecorder,
-)
+from nazarite.config.train_config.xz1.him_env_cfg import Nazarite_HIM_Complex_Terrain_XZ1
+from nazarite.config.train_config.xz1.him_rl_cfg import xz1_him_runner_cfg
+from nazarite.config.train_config.xz1.terminal_observations import TerminalEstimatorRecorder
 from rsl_rl.algorithms.him_ppo import HIMPPO
 from tensordict import TensorDict
 

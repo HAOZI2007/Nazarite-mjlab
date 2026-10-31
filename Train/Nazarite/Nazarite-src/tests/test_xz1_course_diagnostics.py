@@ -12,17 +12,15 @@ from tensordict import TensorDict
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
+from nazarite.config.train_config.xz1.him_env_cfg import (
     Nazarite_HIM_Complex_Terrain_XZ1,
 )
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_env_cfg import (
+from nazarite.config.train_config.xz1.teacher_env_cfg import (
     Nazarite_WMP_HIM_Teacher_XZ1,
 )
-from nazarite.config.train_config.XZ1_env_cfgs.teacher_rl_cfg import (
-    xz1_teacher_runner_cfg,
-)
-from nazarite.mdp import xz1_diagnostics as diagnostics
-from nazarite.rl.xz1_teacher import XZ1TerrainTeacherRunner
+from nazarite.config.train_config.xz1.teacher_rl_cfg import xz1_teacher_runner_cfg
+from nazarite.mdp.xz1 import diagnostics as diagnostics
+from nazarite.rl.xz1.teacher import XZ1TerrainTeacherRunner
 
 
 class Scene(dict):

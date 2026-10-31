@@ -7,9 +7,9 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from nazarite.config.train_config.XZ1_env_cfgs.collect_env_cfg import XZ1DepthCfg
+from nazarite.config.train_config.xz1.collect_env_cfg import XZ1DepthCfg
 from nazarite.rl.wmp.xz1_dataset import CONTRACT
-from nazarite.rl.xz1_student import (
+from nazarite.rl.xz1.student import (
     STUDENT_FORMAT,
     XZ1VisualPolicy,
     action_distillation_step,
@@ -19,8 +19,8 @@ from nazarite.rl.xz1_student import (
     student_eval_cfg,
     warm_start_student,
 )
-from nazarite.rl.xz1_teacher import XZ1TerrainTeacherActor
-from nazarite.scripts.distill_xz1_wmp import teacher_probability
+from nazarite.rl.xz1.teacher import XZ1TerrainTeacherActor
+from nazarite.scripts.xz1.distill_xz1_wmp import teacher_probability
 
 
 def models():
@@ -227,7 +227,7 @@ def test_nonfinite_action_loss_does_not_update_weights():
 
 def test_play_wrapper_notifies_policy_on_step_and_ui_reset(monkeypatch):
     from mjlab.rl import RslRlVecEnvWrapper
-    from nazarite.scripts.play_xz1_wmp_student import StudentPlayWrapper
+    from nazarite.scripts.xz1.play_xz1_wmp_student import StudentPlayWrapper
 
     calls = []
     wrapper = object.__new__(StudentPlayWrapper)

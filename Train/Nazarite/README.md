@@ -9,9 +9,8 @@ Nazarite 的强化学习训练项目，基于本地 mjlab 和 RSL-RL 构建。
 - Go2 平地速度控制：普通 Grid Adaptive baseline 和 WTW Trot 任务；
 - FR-Net 平地/复杂地形摔倒恢复。
 
-SMP 相关实现目前已经**停止更新**。代码、工具、数据目录和已生成产物仍保留，
-仅用于复现实验、检查历史结果和阅读实现；后续不再新增 SMP 功能、修复 SMP
-训练问题或继续围绕 SMP 调参。独立跳跃任务已经移除，不再是当前训练入口。
+DELTA 和 SMP 专用任务、算法及部署实现已移除。XZ1/Go2 的其余 12 个任务继续保留，
+任务 ID 不变；代码分类和迁移说明见 [框架目录管理说明](../../docs/框架目录管理说明.md)。
 
 ## 目录结构
 
@@ -26,13 +25,13 @@ Train/Nazarite/
     ├── __init__.py                # 任务发现和注册入口
     ├── config/robot_config/        # 机器人与执行器配置
     ├── config/train_config/
-    │   ├── env_cfgs/              # 通用 Go2 环境配置
-    │   ├── frnet_config/          # FR-Net 环境与 PPO 配置
-    │   ├── smp_config/            # 已冻结的 SMP 教师/下游环境与 PPO 配置
-    │   └── train_algorithm/smp/   # 已冻结的 SMP prior、GSI、guidance 和教师算法
+    │   ├── go2/                  # Go2 环境与算法配置
+    │   ├── xz1/                  # XZ1 环境与算法配置
+    │   └── shared/               # 共享基础环境
+    ├── tasks/                    # go2/、xz1/ 任务注册
+    ├── rl/                       # him/、xz1/、wmp/、fr_net/
+    ├── scripts/                  # go2/、xz1/ 工具入口
     └── mdp/                       # 自定义观测、奖励、命令等
-├── tools/smp_tools/               # 已冻结的 3DDogs → Go2 离线工具
-├── tools/smp_dataset/             # 已冻结的 SMP 数据子集与本地扩散 prior
 └── output/                        # 本地生成产物，禁止提交
 ~~~
 
@@ -83,8 +82,14 @@ Train/Nazarite/mjlab/.venv/bin/python
 | `Nazarite-Velocity-Flat-Go2-WTW` | 主线：Grid Adaptive + WTW Trot 条件速度策略。 |
 | `Nazarite-FRNet-Recovery-Go2` | 主线：平地 FR-Net 摔倒恢复。 |
 | `Nazarite-FRNet-Recovery-Terrain-Go2` | 主线：复杂地形 FR-Net 摔倒恢复。 |
-| `Nazarite-SMP-Teacher-Go2` | 已冻结：SMP 参考动作物理闭环教师。 |
-| `Nazarite-SMP-Forward-Go2` | 已冻结：冻结 SMP prior 的前向速度任务。 |
+| `Nazarite-HIM-Complex-Terrain-Go2` | HIM 复杂地形速度控制。 |
+| `Nazarite-WMP-HIM-Flat-Go2` | WMP + HIM 平地。 |
+| `Nazarite-WMP-HIM-Complex-Terrain-Go2` | WMP + HIM 复杂地形。 |
+| `Nazarite-Velocity-Flat-XZ1-WTW` | XZ1 WTW 平地。 |
+| `Nazarite-HIM-Complex-Terrain-XZ1` | XZ1 HIM 障碍地形。 |
+| `Nazarite-WMP-HIM-Collect-XZ1` | XZ1 教师数据采集。 |
+| `Nazarite-WMP-HIM-Teacher-XZ1` | XZ1 特权地形教师。 |
+| `Nazarite-WMP-HIM-Eval-XZ1` | XZ1 地形评估。 |
 
 从本目录执行：
 
@@ -108,21 +113,11 @@ WTW 当前默认是固定 Trot，行为频率范围为 `2.0–3.0 Hz`，Grid Ada
 sim2sim 的运行、模型接口、观测维度、WTW phase 和手柄控制说明见
 [sim2sim/README.md](sim2sim/README.md)。
 
-## SMP 冻结说明
-
-SMP 代码不再更新，但为可复现性保留。默认 prior、数据处理、GSI、扩散 prior
-训练入口和 SMP 两个注册任务都属于历史实验资产。除非需要复现旧结果，否则
-不要把 SMP 加入新的奖励组合、课程或部署流程；`smp-pretrain` 也仅保留用于
-旧实验复现。
-
-SMP 历史流程见 [Nazarite-SMP 全链路数据处理与训练指南](../../docs/Nazarite-SMP全链路数据处理与训练指南.md)。
 
 ## 配置约定
 
 - robot_config 只负责机器人 XML/MJCF、实体、执行器、初始状态和尺度参数。
 - train_config 负责组装 ManagerBasedRlEnvCfg 与 RslRlOnPolicyRunnerCfg。
-- train_config/train_algorithm 负责训练任务专属算法实现；SMP 代码统一放在其
-  `smp/` 子包中。
 - mdp 负责 Nazarite 专属的观测、奖励、命令、事件、终止和课程函数。
 - 任务通过 mjlab.tasks entry point 暴露给 mjlab 的 train 和 play 命令。
 - `config/train_config/base_env_cfg.py` 是 WTW 默认行为、Grid、观测历史和奖励组合的唯一组装位置；不要在多个任务文件中分散覆盖同一组参数。

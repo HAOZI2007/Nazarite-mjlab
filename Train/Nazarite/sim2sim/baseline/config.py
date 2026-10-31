@@ -1,15 +1,9 @@
-"""Deployment contract for the selected baseline policy."""
+"""Compatibility import; implementation lives in :mod:`sim2sim.go2.baseline.config`."""
 
-from ..config import ACTOR_TERM_NAMES, ROOT
+import importlib as _importlib
+import sys as _sys
 
-POLICY = (
-    ROOT
-    / "logs"
-    / "rsl_rl"
-    / "go2_flat_baseline"
-    / "2026-09-10_07-58-04"
-    / "2026-09-10_07-58-04.onnx"
-)
-
-OBS_DIM = 45
-OBSERVATION_NAMES = ACTOR_TERM_NAMES.copy()
+if __name__ == "__main__":
+    _importlib.import_module("sim2sim.go2.baseline.config").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("sim2sim.go2.baseline.config")

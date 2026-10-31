@@ -4,9 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from nazarite.config.robot_config.go2_cfg import GO2_FOOT_GEOMS, GO2_XML
-from nazarite.config.train_config.env_cfgs.him_complex_env_cfg import (
-  Nazarite_HIM_Complex_Terrain_Go2,
-)
+from nazarite.config.train_config.go2.him_complex_env_cfg import Nazarite_HIM_Complex_Terrain_Go2
 
 
 def test_leg_collision_sensor_excludes_foot_geoms():

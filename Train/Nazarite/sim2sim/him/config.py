@@ -1,17 +1,9 @@
-"""Deployment contract for the Nazarite Go2 HIM policy."""
+"""Compatibility import; implementation lives in :mod:`sim2sim.shared.him.config`."""
 
-from ..config import ACTION_SCALE, ROOT
+import importlib as _importlib
+import sys as _sys
 
-POLICY = ROOT / "logs" / "rsl_rl" / "go2_him" / "2026-09-29_19-00-44" / "policy.onnx"
-OBS_DIM = 47 * 6
-FRAME_DIM = 47
-HISTORY_SIZE = 6
-OBSERVATION_NAMES = [
-    "base_ang_vel", "projected_gravity", "command", "phase",
-    "joint_pos", "joint_vel", "actions",
-]
-PHASE_PERIOD = 0.6
-ACTION_DIM = 12
-ACTION_SCALE = ACTION_SCALE.copy()
-HIP_EFFORT = 23.7
-CALF_EFFORT = 45.43
+if __name__ == "__main__":
+    _importlib.import_module("sim2sim.shared.him.config").main()
+else:
+    _sys.modules[__name__] = _importlib.import_module("sim2sim.shared.him.config")

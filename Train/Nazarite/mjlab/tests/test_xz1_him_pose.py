@@ -4,11 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from nazarite.config.train_config.XZ1_env_cfgs.him_env_cfg import (
-  XZ1_HIM_JOINT_NAMES,
-  XZ1_HIM_STANCE_PRECOMPENSATION,
-  Nazarite_HIM_Complex_Terrain_XZ1,
-)
+from nazarite.config.train_config.xz1.him_env_cfg import XZ1_HIM_JOINT_NAMES, XZ1_HIM_STANCE_PRECOMPENSATION, Nazarite_HIM_Complex_Terrain_XZ1
 
 from mjlab.utils.lab_api.string import resolve_matching_names_values
 
