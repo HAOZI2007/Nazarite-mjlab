@@ -3,12 +3,14 @@
 # The directory name is intentionally kept as ``XZ1_env_cfgs`` to match the
 # robot-specific task layout requested for this project.
 
+from nazarite.config.train_config.xz1.frnet_env_cfg import Nazarite_FRNet_Recovery_XZ1
 from nazarite.config.train_config.xz1.him_env_cfg import (
     Nazarite_HIM_Complex_Terrain_XZ1,
 )
 from nazarite.config.train_config.xz1.wtw_env_cfg import Nazarite_Velocity_Flat_XZ1_WTW
 
 __all__ = [
+    "Nazarite_FRNet_Recovery_XZ1",
     "Nazarite_HIM_Complex_Terrain_XZ1",
     "Nazarite_Velocity_Flat_XZ1_WTW",
 ]

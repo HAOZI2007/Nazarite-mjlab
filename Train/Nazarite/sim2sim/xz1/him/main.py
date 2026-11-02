@@ -20,8 +20,8 @@ from sim2sim.shared.him.observation import HIMObservationBuilder
 from sim2sim.shared.him.policy import HIMPolicy
 from sim2sim.shared.mujoco_io import MuJoCoIO
 
-RUN = ROOT / "logs/rsl_rl/xz1_him_complex/2026-10-25_22-04-31"
-DEFAULT_POLICY = RUN / "model_31300.pt"
+RUN = ROOT / "logs/rsl_rl/xz1_him_complex/2026-11-01_21-00-14"
+DEFAULT_POLICY = RUN / "model_40900.pt"
 SCENE = ROOT / "sim2sim/assets/Robocon2027.xml"
 ROBOT = ROOT / "MJCF-Manager/Robots/XZ1/xmls/xz1.xml"
 JOINT_NAMES = [

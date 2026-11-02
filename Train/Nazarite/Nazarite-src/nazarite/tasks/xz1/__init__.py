@@ -3,12 +3,20 @@
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 from nazarite.config.train_config.xz1 import (
+    Nazarite_FRNet_Recovery_XZ1,
     Nazarite_HIM_Complex_Terrain_XZ1,
     Nazarite_Velocity_Flat_XZ1_WTW,
 )
 from nazarite.config.train_config.xz1.collect_env_cfg import (
     Nazarite_WMP_HIM_Collect_XZ1,
 )
+from nazarite.config.train_config.xz1.frnet_legacy_env_cfg import (
+    Nazarite_FRNet_Recovery_XZ1 as legacy_frnet_env_cfg,
+)
+from nazarite.config.train_config.xz1.frnet_legacy_rl_cfg import (
+    xz1_frnet_runner_cfg as legacy_frnet_rl_cfg,
+)
+from nazarite.config.train_config.xz1.frnet_rl_cfg import xz1_frnet_runner_cfg
 from nazarite.config.train_config.xz1.him_rl_cfg import xz1_him_runner_cfg
 from nazarite.config.train_config.xz1.teacher_env_cfg import (
     XZ1_TEACHER_SCAN_HISTORY_LENGTH,
@@ -22,7 +30,25 @@ from nazarite.config.train_config.xz1.teacher_rl_cfg import (
 )
 from nazarite.config.train_config.xz1.wtw_rl_cfg import xz1_wtw_runner_cfg
 from nazarite.rl.him.runner import HIMOnPolicyRunner
+from nazarite.rl.xz1.frnet_runner import XZ1RecoveryRunner
+from nazarite.rl.xz1.getup_runner import XZ1GetupRunner
 from nazarite.rl.xz1.teacher import XZ1TerrainTeacherRunner
+
+register_mjlab_task(
+    task_id="Nazarite-FRNet-Recovery-XZ1",
+    env_cfg=Nazarite_FRNet_Recovery_XZ1(),
+    play_env_cfg=Nazarite_FRNet_Recovery_XZ1(play=True),
+    rl_cfg=xz1_frnet_runner_cfg(),
+    runner_cls=XZ1GetupRunner,
+)
+
+register_mjlab_task(
+    task_id="Nazarite-FRNet-Paper-Recovery-XZ1",
+    env_cfg=legacy_frnet_env_cfg(),
+    play_env_cfg=legacy_frnet_env_cfg(play=True),
+    rl_cfg=legacy_frnet_rl_cfg(),
+    runner_cls=XZ1RecoveryRunner,
+)
 
 register_mjlab_task(
     task_id="Nazarite-WMP-HIM-Collect-XZ1",

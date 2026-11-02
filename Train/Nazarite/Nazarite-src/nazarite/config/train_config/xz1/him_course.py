@@ -10,6 +10,7 @@ import torch
 
 from mjlab.envs.mdp.events import reset_root_state_uniform
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.tasks.velocity.mdp.rewards import self_collision_cost
 from mjlab.utils.lab_api.math import wrap_to_pi
 from nazarite.config.robot_config.xz1_cfg import XZ1_FOOT_SITES
 from nazarite.config.train_config.xz1.him_obstacles import OBSTACLE_TERRAIN_NAMES, lerp
@@ -27,6 +28,16 @@ from nazarite.mdp.xz1.contacts import GapBottomContact
 NARROW_TERRAIN_NAMES = ("narrow_stairs", "narrow_ramp")
 COURSE_TERRAIN_NAMES = (*NARROW_TERRAIN_NAMES, *OBSTACLE_TERRAIN_NAMES)
 HIP_NAMES = tuple(f"{leg}_hip_joint" for leg in ("FL", "FR", "RR", "RL"))
+
+
+def xz1_self_collision_cost(env, sensor_name: str, force_threshold: float = 1.0):
+    """Charge once if any substep in the current control interval self-collides.
+
+    The sensor history must cover exactly one control interval. Capping the
+    upstream substep count avoids scaling the cost with decimation or with the
+    number of simultaneous robot-internal contacts.
+    """
+    return self_collision_cost(env, sensor_name, force_threshold).clamp_max(1.0)
 
 
 class XZ1TerrainPosture(terrain_variable_posture):

@@ -235,7 +235,7 @@ def Nazarite_FRNet_Recovery_Go2(
     }
     _configure_recovery_contact_history(cfg)
     _add_base_height_scan(cfg)
-    if challenging_terrain and use_critic_height_map:
+    if use_critic_height_map:
         _add_privileged_terrain_height_map(cfg)
 
     cfg.events.pop("push_robot", None)

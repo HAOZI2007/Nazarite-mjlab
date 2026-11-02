@@ -6,6 +6,7 @@ from . import frnet_events as frnet_events
 from . import frnet_observations as frnet_observations
 from . import frnet_rewards as frnet_rewards
 from . import frnet_terminations as frnet_terminations
+from . import paper_rewards as paper_rewards
 
 __all__ = (
   "frnet_actions",
@@ -14,4 +15,5 @@ __all__ = (
   "frnet_observations",
   "frnet_rewards",
   "frnet_terminations",
+  "paper_rewards",
 )

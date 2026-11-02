@@ -89,6 +89,8 @@ XZ1_HIM_GAIT_COMMAND_THRESHOLD = 0.1
 # in control steps.
 XZ1_HIM_PHYSICS_DT = 0.002
 XZ1_HIM_DECIMATION = 10
+XZ1_HIM_SELF_COLLISION_WEIGHT = -1.5
+XZ1_HIM_SELF_COLLISION_FORCE_THRESHOLD = 5.0
 # A leg brush against a stair or tire during one or two substeps is normal
 # while climbing.  Charge only contacts that survive two whole control steps
 # (40 ms), which is long enough to exclude stubbing and short enough to catch
@@ -378,6 +380,17 @@ def _build_xz1_env(
         num_slots=1,
         track_air_time=True,
         preserve_order=True,
+    )
+    self_collision = ContactSensorCfg(
+        name="self_collision",
+        primary=ContactMatch(mode="subtree", pattern=XZ1_BASE_BODY, entity="robot"),
+        secondary=ContactMatch(mode="subtree", pattern=XZ1_BASE_BODY, entity="robot"),
+        fields=("found", "force"),
+        # Keep the strongest internal contact; summing internal forces can
+        # cancel equal/opposite forces and hide an actual self-collision.
+        reduce="maxforce",
+        num_slots=1,
+        history_length=XZ1_HIM_DECIMATION,
     )
     leg_ground = ContactSensorCfg(
         name="leg_ground_contact",
@@ -826,6 +839,14 @@ def _build_xz1_env(
                 "window_length": XZ1_HIM_LEG_CONTACT_HISTORY,
             },
         ),
+        "self_collision": RewardTermCfg(
+            func=him_course.xz1_self_collision_cost,
+            weight=XZ1_HIM_SELF_COLLISION_WEIGHT,
+            params={
+                "sensor_name": "self_collision",
+                "force_threshold": XZ1_HIM_SELF_COLLISION_FORCE_THRESHOLD,
+            },
+        ),
         # Added on top of the reference set: the Gaussian tracking reward is
         # convex in the velocity error, so rocking back and forth through the
         # command pays more than tracking it steadily when the terrain prevents
@@ -1032,6 +1053,7 @@ def _build_xz1_env(
                 feet_height,
                 root_angmom,
                 feet_ground,
+                self_collision,
                 leg_ground,
                 rear_thigh_ground,
                 base_ground,

@@ -16,11 +16,13 @@ class FRNetActorCfg(RslRlModelCfg):
     """Additional constructor arguments consumed by :class:`FRNetActor`."""
 
     history_length: int = 5
-    proprio_dim: int = 42
+    proprio_dim: int | None = 42
     mass_dim: int = 4
     contact_dim: int = 13
     latent_dim: int = 16
     mcp_hidden_dims: tuple[int, ...] = (256, 128)
+    use_vae: bool = False
+    decoder_hidden_dims: tuple[int, ...] = (128, 256)
     class_name: str = "nazarite.rl.fr_net.frnet_actor:FRNetActor"
 
 
@@ -31,6 +33,8 @@ class FRNetPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     mcp_loss_coef: float = 0.25
     mass_loss_coef: float = 1.0
     contact_loss_coef: float = 1.0
+    reconstruction_loss_coef: float = 1.0
+    vae_kl_loss_coef: float = 0.01
     class_name: str = "nazarite.rl.fr_net.frnet_ppo:FRNetPPO"
 
 

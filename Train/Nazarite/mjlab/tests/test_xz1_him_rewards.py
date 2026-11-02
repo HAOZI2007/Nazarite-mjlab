@@ -238,6 +238,7 @@ XZ1_REFERENCE_REWARD_WEIGHTS = {
   "soft_landing": -1e-3,
   "stand_still": -1.0,
   "leg_collision": -1.0,
+  "self_collision": -1.0,
   # Added on top of the reference set to price retrograde motion: the Gaussian
   # tracking reward is convex, so rocking through the command pays when steady
   # tracking is impossible.
@@ -452,7 +453,14 @@ def test_xz1_him_config_matches_reference_reward_set():
   assert leg_collision.weight == -1.0
   assert leg_collision.params["force_threshold"] == 1.0
   assert leg_collision.params["sensor_name"] == "leg_ground_contact"
-  assert "self_collision_contact" not in sensors
+  self_collision = cfg.rewards["self_collision"]
+  assert self_collision.func is him_course.xz1_self_collision_cost
+  self_sensor = sensors[self_collision.params["sensor_name"]]
+  assert self_sensor.primary.mode == self_sensor.secondary.mode == "subtree"
+  assert self_sensor.primary.entity == self_sensor.secondary.entity == "robot"
+  assert self_sensor.primary.pattern == self_sensor.secondary.pattern == XZ1_BASE_BODY
+  assert self_sensor.reduce == "maxforce"
+  assert self_sensor.history_length == cfg.decimation
 
   leg_sensor = sensors["leg_ground_contact"]
   assert leg_sensor.history_length == 20

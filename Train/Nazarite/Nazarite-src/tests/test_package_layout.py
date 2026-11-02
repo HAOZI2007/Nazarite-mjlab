@@ -14,6 +14,8 @@ EXPECTED_TASKS = {
     "Nazarite-WMP-HIM-Complex-Terrain-Go2",
     "Nazarite-FRNet-Recovery-Go2",
     "Nazarite-FRNet-Recovery-Terrain-Go2",
+    "Nazarite-FRNet-Recovery-XZ1",
+    "Nazarite-FRNet-Paper-Recovery-XZ1",
     "Nazarite-Velocity-Flat-XZ1-WTW",
     "Nazarite-HIM-Complex-Terrain-XZ1",
     "Nazarite-WMP-HIM-Collect-XZ1",

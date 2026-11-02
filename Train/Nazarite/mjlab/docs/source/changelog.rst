@@ -8,6 +8,10 @@ Upcoming version (not yet released)
 Changed
 ^^^^^^^
 
+- Base XZ1 HIM penalizes robot-internal contacts above 1 N with weight -1.0.
+  A max-force sensor covers exactly one control interval; the cost is binary
+  per interval, excludes terrain contacts, and preserves actor observations.
+
 - Remove retired Nazarite DELTA and SMP tasks and their play/viewer hooks.
   Preserve shared HIM terrain curricula and XZ1/Go2 task behavior.
   Group Nazarite training/deployment implementations by robot and purpose,

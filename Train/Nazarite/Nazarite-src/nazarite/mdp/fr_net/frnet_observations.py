@@ -80,9 +80,9 @@ def frnet_contact_target(
 ) -> torch.Tensor:
   """Return the privileged [N, 13] body-ground contact target.
 
-  The fixed channel order is ``base, FL/FR/RL/RR hip, thigh, calf``. It is
-  deliberately defined once here so the target, logging, checkpoints, and MCP
-  head always agree on leg ordering.
+  Channels are base, four hips, four thighs, four shanks. Within each block,
+  the order is the corresponding sensor's ``primary_names``: Go2 configures
+  FL/FR/RL/RR, while XZ1 configures FL/FR/RR/RL to match its MJCF traversal.
   """
   base = _contact_sensor_label(env, "trunk_ground_touch", 1, force_threshold)
   hips = _contact_sensor_label(env, "hip_ground_touch", 4, force_threshold)
@@ -107,8 +107,14 @@ def _sim_body_ids(
   return robot.indexing.body_ids[local_ids_tensor]
 
 
-def frnet_mass_target(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Return the current [N, 4] leg-mass ratios in FL, FR, RL, RR order.
+def frnet_mass_target(
+  env: ManagerBasedRlEnv,
+  body_groups: tuple[tuple[str, ...], ...] = _LEG_BODY_GROUPS,
+) -> torch.Tensor:
+  """Return four live mass ratios for the explicitly ordered body groups.
+
+  The default retains Go2's historical FL/FR/RL/RR leg groups. XZ1 passes
+  base/hips/thighs/shanks to follow the paper's component-mass grouping.
 
   ``dr.pseudo_inertia`` expands ``body_mass`` per environment and changes it at
   reset. Reading the live model, rather than caching a sampled ratio, ensures
@@ -120,7 +126,9 @@ def frnet_mass_target(env: ManagerBasedRlEnv) -> torch.Tensor:
   default_mass = env.sim.get_default_field("body_mass")
 
   ratios = []
-  for body_names in _LEG_BODY_GROUPS:
+  if len(body_groups) != MASS_TARGET_DIM or any(not group for group in body_groups):
+    raise ValueError("FR-Net requires four non-empty mass body groups")
+  for body_names in body_groups:
     body_ids = _sim_body_ids(env, body_names)
     current_mass = body_mass[:, body_ids].sum(dim=-1)
     nominal_mass = default_mass[body_ids].sum().clamp_min(1.0e-6)
@@ -128,9 +136,12 @@ def frnet_mass_target(env: ManagerBasedRlEnv) -> torch.Tensor:
   return torch.cat(ratios, dim=-1)
 
 
-def frnet_aux_targets(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Return [N, 17] = four mass ratios followed by 13 contact labels."""
-  return torch.cat((frnet_mass_target(env), frnet_contact_target(env)), dim=-1)
+def frnet_aux_targets(
+  env: ManagerBasedRlEnv,
+  body_groups: tuple[tuple[str, ...], ...] = _LEG_BODY_GROUPS,
+) -> torch.Tensor:
+  """Return [N, 17] = four configured mass ratios and 13 contact labels."""
+  return torch.cat((frnet_mass_target(env, body_groups), frnet_contact_target(env)), dim=-1)
 
 
 def frnet_privileged_height_map(
@@ -161,7 +172,9 @@ def frnet_privileged_height_map(
   return heights.flatten(start_dim=1)
 
 
-def make_frnet_observation_terms() -> tuple[
+def make_frnet_observation_terms(
+  mass_body_groups: tuple[tuple[str, ...], ...] = _LEG_BODY_GROUPS,
+) -> tuple[
   dict[str, ObservationTermCfg],
   dict[str, ObservationTermCfg],
   dict[str, ObservationTermCfg],
@@ -234,6 +247,7 @@ def make_frnet_observation_terms() -> tuple[
       # Privileged values help the critic estimate return but never reach actor.
       "frnet_mass_target": ObservationTermCfg(
         func=frnet_mass_target,
+        params={"body_groups": mass_body_groups},
         history_length=1,
       ),
       "frnet_contact_target": ObservationTermCfg(
@@ -249,6 +263,10 @@ def make_frnet_observation_terms() -> tuple[
   )
 
   auxiliary_terms = {
-    "targets": ObservationTermCfg(func=frnet_aux_targets, history_length=0),
+    "targets": ObservationTermCfg(
+      func=frnet_aux_targets,
+      params={"body_groups": mass_body_groups},
+      history_length=0,
+    ),
   }
   return actor_terms, critic_terms, auxiliary_terms

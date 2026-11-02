@@ -1,0 +1,5 @@
+# Preserve the repository's existing Sim2Real directory name.
+[lint.per-file-ignores]
+"__init__.py" = ["N999"]
+"xz1_him/__init__.py" = ["N999"]
+"xz1_him/__main__.py" = ["N999"]
