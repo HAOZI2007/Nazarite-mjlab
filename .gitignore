@@ -54,6 +54,9 @@ build/
 dist/
 *.egg-info/
 
+# Local ONNX Runtime C++ SDK downloaded for Sim2Real builds.
+/Sim2Real/sdk/
+
 # OS and editor temporary files.
 .DS_Store
 Thumbs.db

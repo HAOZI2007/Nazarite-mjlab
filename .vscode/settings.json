@@ -10,5 +10,6 @@
   "python.analysis.usePerProjectEnvironments": false,
   "python.analysis.useLibraryCodeForTypes": true,
   "python.terminal.activateEnvironment": true,
-  "python-envs.defaultEnvManager": "ms-python.python:system"
+  "python-envs.defaultEnvManager": "ms-python.python:system",
+  "cmake.sourceDirectory": "/home/haozi/桌面/Nazarite-mjlab/Sim2Real/xz1"
 }
