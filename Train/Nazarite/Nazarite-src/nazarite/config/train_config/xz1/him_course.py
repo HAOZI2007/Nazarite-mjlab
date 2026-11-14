@@ -4,6 +4,7 @@ Course geometry is privileged training state. The actor still receives the
 same 47-D frame and deployment still consumes ordinary body velocity commands.
 """
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -21,6 +22,7 @@ from nazarite.mdp.shared.commands import (
 from nazarite.mdp.shared.events import reset_root_state_uniform_facing_high_wall
 from nazarite.mdp.shared.rewards import (
     hip_joint_deviation_penalty,
+    safe_base_ang_vel,
     terrain_variable_posture,
 )
 from nazarite.mdp.xz1.contacts import GapBottomContact
@@ -28,6 +30,28 @@ from nazarite.mdp.xz1.contacts import GapBottomContact
 NARROW_TERRAIN_NAMES = ("narrow_stairs", "narrow_ramp")
 COURSE_TERRAIN_NAMES = (*NARROW_TERRAIN_NAMES, *OBSTACLE_TERRAIN_NAMES)
 HIP_NAMES = tuple(f"{leg}_hip_joint" for leg in ("FL", "FR", "RR", "RL"))
+_DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+def xz1_near_zero_yaw_rate_cost(
+    env,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+):
+    """Penalize squared body-z rate error only near zero commanded yaw rate.
+
+    The threshold includes its boundary and uses rad/s. Standing and lateral
+    motion are included; no terrain or linear-speed gating is applied. Return
+    a positive cost: the task supplies a negative weight and the manager dt.
+    """
+    if not math.isfinite(command_threshold) or command_threshold <= 0.0:
+        raise ValueError("command_threshold must be finite and positive")
+    command = env.command_manager.get_command(command_name)
+    actual = safe_base_ang_vel(env, asset_cfg)[:, 2]
+    error_squared = (actual - command[:, 2]).square()
+    active = command[:, 2].abs() <= command_threshold
+    return torch.where(active, error_squared, torch.zeros_like(error_squared))
 
 
 def xz1_self_collision_cost(env, sensor_name: str, force_threshold: float = 1.0):

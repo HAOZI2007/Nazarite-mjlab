@@ -34,6 +34,29 @@ WMP 扫描教师、采集和视觉学生使用独立的九类障碍配置，
 play 随机选取已知类型列和难度行，并在位姿重置之前选择地块。
 此处 `terrain_generator.curriculum=True` 用于确定几何布局；play 的训练课程仍为空。
 
+## 近零转向指令惩罚
+
+基础 XZ1-HIM 新增 `near_zero_yaw_rate`，权重 **−1.0**。
+当 `abs(twist.wz) <= 0.1 rad/s` 时，cost 为
+`(robot.root_link_ang_vel_b.z - twist.wz)^2`；超过阈值时为 0。
+这里使用机体系 Z 轴角速度，与原有 HIM 转向跟踪奖励一致，
+不是欧拉航向角的导数或相对初始航向的偏差。
+包含静止、前后行走及横移，所有基础 HIM 地形采用同一判定。
+使用每一步更新后的最终指令，包括航向/窄地形控制生成的纠偏指令。
+
+参数集中在 `xz1/him_env_cfg.py` 的
+`XZ1_HIM_NEAR_ZERO_YAW_RATE_WEIGHT` 和
+`XZ1_HIM_NEAR_ZERO_YAW_RATE_COMMAND_THRESHOLD` 中。
+函数返回正 cost，RewardManager 乘负权重并按控制步长缩放，函数内不重复乘 dt。
+例如零转向指令下实际角速度为 0.05 rad/s，cost 为 0.0025，
+在 0.02 s 控制步长下单步贡献为 −0.00005。
+
+通过 `Episode_Reward/near_zero_yaw_rate` 查看统计；同时比较固定前进指令下
+5 秒和 10 秒的航向/横向偏差，以及主动转向和高墙通过率。
+本项补充原有 `track_angular_velocity`，不新增航向外环或绝对航向观测，
+因此不能保证累计航向误差为零。观测与动作接口不变，可加载旧模型续训；
+只有续训后的策略才会受到新奖励影响。Go2 和独立 WMP Teacher 不启用此项。
+
 ## 自碰撞惩罚
 
 基础 XZ1-HIM 新增 `self_collision`，权重 **−1.0**、力阈值 **1 N**。

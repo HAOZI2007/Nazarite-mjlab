@@ -8,6 +8,10 @@ Upcoming version (not yet released)
 Changed
 ^^^^^^^
 
+- Base XZ1 HIM adds squared body-z angular-velocity tracking cost with weight
+  -1.0 when the final yaw-rate command magnitude is at most 0.1 rad/s.
+  Go2 and the independent XZ1 teacher reward configurations are unchanged.
+
 - Base XZ1 HIM penalizes robot-internal contacts above 1 N with weight -1.0.
   A max-force sensor covers exactly one control interval; the cost is binary
   per interval, excludes terrain contacts, and preserves actor observations.

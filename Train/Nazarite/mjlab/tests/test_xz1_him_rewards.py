@@ -220,6 +220,7 @@ XZ1_REFERENCE_REWARD_WEIGHTS = {
   # the command was zero), orientation is softened and gait credit is tenfold.
   "track_linear_velocity": 1.5,
   "track_angular_velocity": 0.8,
+  "near_zero_yaw_rate": -1.0,
   "body_orientation_l2": -0.5,
   "pose": 0.2,
   "body_ang_vel": -0.05,
@@ -238,7 +239,7 @@ XZ1_REFERENCE_REWARD_WEIGHTS = {
   "soft_landing": -1e-3,
   "stand_still": -1.0,
   "leg_collision": -1.0,
-  "self_collision": -1.0,
+  "self_collision": -1.5,
   # Added on top of the reference set to price retrograde motion: the Gaussian
   # tracking reward is convex, so rocking through the command pays when steady
   # tracking is impossible.

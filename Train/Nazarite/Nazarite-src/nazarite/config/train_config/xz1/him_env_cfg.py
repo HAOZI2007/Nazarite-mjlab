@@ -184,6 +184,9 @@ XZ1_HIM_SUPPORT_EDGE_MARGIN = 0.03
 XZ1_HIM_SUPPORT_EDGE_WEIGHT = -0.20
 XZ1_HIM_ACTION_RATE_WEIGHT = -0.015
 XZ1_HIM_POSE_WEIGHT = 0.20
+# Additional small-error curvature during straight/near-straight commands.
+XZ1_HIM_NEAR_ZERO_YAW_RATE_WEIGHT = -1.0
+XZ1_HIM_NEAR_ZERO_YAW_RATE_COMMAND_THRESHOLD = 0.1  # rad/s, inclusive
 # Pose is measured from XZ1_INIT_STATE, independently of servo precompensation.
 XZ1_HIM_POSE_STD_STANDING = {
     ".*_hip_joint": 0.10,
@@ -688,6 +691,15 @@ def _build_xz1_env(
             params={
                 "command_name": "twist",
                 "std": math.sqrt(0.5),
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "near_zero_yaw_rate": RewardTermCfg(
+            func=him_course.xz1_near_zero_yaw_rate_cost,
+            weight=XZ1_HIM_NEAR_ZERO_YAW_RATE_WEIGHT,
+            params={
+                "command_name": "twist",
+                "command_threshold": XZ1_HIM_NEAR_ZERO_YAW_RATE_COMMAND_THRESHOLD,
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
